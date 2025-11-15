@@ -74,7 +74,7 @@ def check_virus_status():
         
         # Check data files
         data_files = [
-            (".system_cache/comprehensive_data.json", "Comprehensive data"),
+            (".system_cache/normalized_data.json", "Normalized data"),
             (".system_cache/keyboard_log.txt", "Merged log (keyboard + activity)"),
         ]
         

@@ -32,8 +32,8 @@ def decode_base64_content(content):
         return f"Error decoding: {e}"
 
 def decrypt_comprehensive_data():
-    """Decode all base64 content in comprehensive_data.json"""
-    data_file = ".system_cache/comprehensive_data.json"
+    """Decode all base64 content in normalized_data.json"""
+    data_file = ".system_cache/normalized_data.json"
     
     if not os.path.exists(data_file):
         print(f"Error: {data_file} not found")
@@ -43,31 +43,28 @@ def decrypt_comprehensive_data():
     with open(data_file, 'r', encoding='utf-8') as f:
         data = json.load(f)
     
-    # Decode sensitive files
-    if 'sensitive_files' in data:
-        print("\n=== Decoding Sensitive Files ===\n")
-        for i, file_info in enumerate(data['sensitive_files']):
-            if 'content' in file_info and file_info['content']:
+    # Decode unified files (normalized_data.json structure)
+    if 'unified_files' in data:
+        print("\n=== Decoding Unified Files ===\n")
+        for i, file_info in enumerate(data['unified_files']):
+            if 'content_preview' in file_info and file_info['content_preview']:
                 print(f"File {i+1}: {file_info['path']}")
+                print(f"Category: {file_info.get('category', 'unknown')}")
                 print(f"Size: {file_info['size']} bytes")
                 print(f"Modified: {file_info['modified']}")
-                print("Content:")
+                print("Content Preview:")
                 print("-" * 60)
-                decoded = decode_base64_content(file_info['content'])
-                print(decoded)
+                # content_preview is already decoded, just show it
+                print(file_info['content_preview'])
                 print("-" * 60)
                 print()
     
     # Save decoded version
-    output_file = ".system_cache/comprehensive_data_decoded.json"
+    output_file = ".system_cache/normalized_data_decoded.json"
     print(f"\nSaving decoded version to {output_file}...")
     
-    # Create decoded copy
+    # Create decoded copy (content_preview is already decoded in normalized_data.json)
     decoded_data = data.copy()
-    if 'sensitive_files' in decoded_data:
-        for file_info in decoded_data['sensitive_files']:
-            if 'content' in file_info and file_info['content']:
-                file_info['content_decoded'] = decode_base64_content(file_info['content'])
     
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(decoded_data, f, indent=2, default=str)
@@ -121,8 +118,8 @@ def main():
             decrypt_comprehensive_data()
         else:
             print("Usage:")
-            print("  python decrypt_data.py              # Decode comprehensive_data.json")
-            print("  python decrypt_data.py comprehensive  # Decode comprehensive_data.json")
+            print("  python decrypt_data.py              # Decode normalized_data.json")
+            print("  python decrypt_data.py comprehensive  # Decode normalized_data.json")
             print("  python decrypt_data.py encrypted      # Decrypt encrypted_data.bin")
     else:
         # Default: decode comprehensive data

